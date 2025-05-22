@@ -1,0 +1,23 @@
+
+config cpecfg 'config'
+
+config cpesim 'cpesim1'
+	option pdptype 'ip'
+	option mode 'sa_only'
+	option custom_earfcn5 '1'
+	option earfcn5 '633984'
+	option pci5 '93'
+	option band5 '1'
+	option threshold_smds '81.28305'
+	option threshold_cds '81.28305'
+
+config cpesim 'cpesim2'
+
+config cpesim 'cpesim3'
+
+config cpesim 'cpe1sim1'
+	option threshold_smds '0.00000'
+
+config cpesim 'cpe1sim2'
+	option threshold_smds '0.00000'
+
