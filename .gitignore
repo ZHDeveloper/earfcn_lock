@@ -1,0 +1,13 @@
+# 忽略 usr 和 var 文件夹
+usr/
+var/
+bin/
+
+# 忽略常见的临时文件和系统文件
+*.tmp
+*.log
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

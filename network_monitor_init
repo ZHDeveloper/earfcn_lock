@@ -1,0 +1,30 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+STOP=15
+USE_PROCD=1
+
+start_service() {
+    procd_open_instance
+    procd_set_param command /bin/sh /root/network_monitor.sh
+    procd_set_param respawn
+    procd_close_instance
+    
+    # 添加到crontab以每分钟执行一次
+    echo "* * * * * /bin/sh /root/network_monitor.sh" >> /etc/crontabs/root
+    # 添加每天00:00清空日志的定时任务
+    echo "0 0 * * * > /tmp/network_monitor.log" >> /etc/crontabs/root
+    /etc/init.d/cron restart
+}
+
+stop_service() {
+    # 从crontab中移除
+    sed -i '/network_monitor.sh/d' /etc/crontabs/root
+    sed -i '/\/tmp\/network_monitor.log/d' /etc/crontabs/root
+    /etc/init.d/cron restart
+}
+
+reload_service() {
+    stop
+    start
+}
