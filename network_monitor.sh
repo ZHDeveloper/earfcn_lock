@@ -107,7 +107,7 @@ lock_cellular_sequence() {
         date '+%s' > $LAST_SWITCH_TIME_FILE
         return 0
     else
-        log_message "ERROR" "参数切换失败 (uci结果: commit=$commit_result)"
+        log_message "ERROR" "参数切换失败 (uci commit 失败)"
         return 1
     fi
     
@@ -147,7 +147,7 @@ lock_cellular_141() {
         date '+%s' > $LAST_SWITCH_TIME_FILE
         return 0
     else
-        log_message "ERROR" "参数切换失败 (uci结果: commit=$commit_result)"
+        log_message "ERROR" "参数切换失败 (uci commit 失败)"
         return 1
     fi
     
