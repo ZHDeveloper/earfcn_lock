@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # 网络监控脚本
-# 功能：检测网络连接状态，在断网时按间隔切换PCI5值（距离上次切换超过1分钟）
+# 功能：检测网络连接状态，在断网时按间隔切换PCI5值（距离上次切换超过50秒）
 #       在网络恢复时发送钉钉通知消息
 #       在指定时间范围内（6:50-6:58，8:50-8:58，...，20:50-20:58）自动切换到earfcn5=633984,pci5=141
 
@@ -63,28 +63,10 @@ check_network() {
     return $ping_result
 }
 
-# 获取当前pci5值
-get_pci5_value() {
-    local pci5_value=$(grep -A 10 "cpesim 'cpesim1'" /etc/config/cpecfg | grep "option pci5" | cut -d "'" -f 2)
-    if [ -z "$pci5_value" ]; then
-        log_message "WARN" "无法从配置文件读取pci5值"
-    fi
-    echo "$pci5_value"
-}
-
-# 获取当前earfcn5值
-get_earfcn5_value() {
-    local earfcn5_value=$(grep -A 10 "cpesim 'cpesim1'" /etc/config/cpecfg | grep "option earfcn5" | cut -d "'" -f 2)
-    if [ -z "$earfcn5_value" ]; then
-        log_message "WARN" "无法从配置文件读取earfcn5值"
-    fi
-    echo "$earfcn5_value"
-}
-
 # 顺序切换earfcn5和pci5值（用于断网时）
 lock_cellular_sequence() {
-    current_pci5=$(get_pci5_value)
-    current_earfcn5=$(get_earfcn5_value)
+    local current_pci5=$(uci -q get cpecfg.cpesim1.pci5)
+    local current_earfcn5=$(uci -q get cpecfg.cpesim1.earfcn5)
     
     # 根据当前组合确定下一个组合
     if [ "$current_earfcn5" = "633984" ] && [ "$current_pci5" = "141" ]; then
@@ -105,13 +87,12 @@ lock_cellular_sequence() {
         new_earfcn5="633984"
     fi
         
-    # 使用sed替换earfcn5和pci5值
-    sed -i "s/option pci5 '$current_pci5'/option pci5 '$new_pci5'/" /etc/config/cpecfg
-    local sed_result1=$?
-    sed -i "s/option earfcn5 '$current_earfcn5'/option earfcn5 '$new_earfcn5'/" /etc/config/cpecfg
-    local sed_result2=$?
+    # 使用uci设置earfcn5和pci5值
+    uci set cpecfg.cpesim1.pci5="$new_pci5"
+    uci set cpecfg.cpesim1.earfcn5="$new_earfcn5"
+    uci commit cpecfg
     
-    if [ $sed_result1 -eq 0 ] && [ $sed_result2 -eq 0 ]; then
+    if [ $? -eq 0 ]; then
         log_message "INFO" "参数已从 earfcn5=$current_earfcn5,pci5=$current_pci5 切换到 earfcn5=$new_earfcn5,pci5=$new_pci5"
         # 执行更新命令
         log_message "INFO" "开始执行更新命令: cpetools.sh -u"
@@ -126,7 +107,7 @@ lock_cellular_sequence() {
         date '+%s' > $LAST_SWITCH_TIME_FILE
         return 0
     else
-        log_message "ERROR" "参数切换失败 (sed结果: pci5=$sed_result1, earfcn5=$sed_result2)"
+        log_message "ERROR" "参数切换失败 (uci结果: commit=$commit_result)"
         return 1
     fi
     
@@ -134,8 +115,8 @@ lock_cellular_sequence() {
 
 # 直接切换到earfcn5=633984,pci5=141（用于有网络时）
 lock_cellular_141() {
-    current_pci5=$(get_pci5_value)
-    current_earfcn5=$(get_earfcn5_value)
+    local current_pci5=$(uci -q get cpecfg.cpesim1.pci5)
+    local current_earfcn5=$(uci -q get cpecfg.cpesim1.earfcn5)
 
     # 如果当前参数已经是目标组合，则无需切换
     if [ "$current_earfcn5" = "633984" ] && [ "$current_pci5" = "141" ]; then
@@ -146,13 +127,12 @@ lock_cellular_141() {
     new_pci5="141"
     new_earfcn5="633984"
     
-    # 使用sed替换earfcn5和pci5值
-    sed -i "s/option pci5 '$current_pci5'/option pci5 '$new_pci5'/" /etc/config/cpecfg
-    local sed_result1=$?
-    sed -i "s/option earfcn5 '$current_earfcn5'/option earfcn5 '$new_earfcn5'/" /etc/config/cpecfg
-    local sed_result2=$?
+    # 使用uci设置earfcn5和pci5值
+    uci set cpecfg.cpesim1.pci5="$new_pci5"
+    uci set cpecfg.cpesim1.earfcn5="$new_earfcn5"
+    uci commit cpecfg
 
-    if [ $sed_result1 -eq 0 ] && [ $sed_result2 -eq 0 ]; then
+    if [ $? -eq 0 ]; then
         log_message "INFO" "参数已从 earfcn5=$current_earfcn5,pci5=$current_pci5 切换到 earfcn5=$new_earfcn5,pci5=$new_pci5"
         # 执行更新命令
         log_message "INFO" "开始执行更新命令: cpetools.sh -u"
@@ -167,7 +147,7 @@ lock_cellular_141() {
         date '+%s' > $LAST_SWITCH_TIME_FILE
         return 0
     else
-        log_message "ERROR" "参数切换失败 (sed结果: earfcn5=$sed_result1, pci5=$sed_result2)"
+        log_message "ERROR" "参数切换失败 (uci结果: commit=$commit_result)"
         return 1
     fi
     
@@ -180,9 +160,9 @@ should_switch_pci() {
         return 0 # 需要切换
     else
         # 计算距离上次切换的时间（秒）
-        last_switch_time=$(cat $LAST_SWITCH_TIME_FILE)
-        current_time=$(date '+%s')
-        time_since_last_switch=$((current_time - last_switch_time))
+        local last_switch_time=$(cat $LAST_SWITCH_TIME_FILE)
+        local current_time=$(date '+%s')
+        local time_since_last_switch=$((current_time - last_switch_time))
         
         if [ $time_since_last_switch -ge 50 ]; then
             return 0 # 需要切换
@@ -197,32 +177,32 @@ handle_network_recovery() {
     # 如果存在断网记录则发送钉钉消息并删除记录文件
     if [ -f $DISCONNECT_TIME_FILE ]; then
         # 获取当前时间
-        current_time=$(date '+%Y-%m-%d %H:%M:%S')
+        local current_time=$(date '+%Y-%m-%d %H:%M:%S')
         
         # 获取断网时间（Unix时间戳）
-        disconnect_time=$(cat $DISCONNECT_TIME_FILE)
+        local disconnect_time=$(cat $DISCONNECT_TIME_FILE)
         
         # 获取可读的断网时间
-        disconnect_readable_time="未知"
+        local disconnect_readable_time="未知"
         if [ -f $DISCONNECT_READABLE_TIME_FILE ]; then
             disconnect_readable_time=$(cat $DISCONNECT_READABLE_TIME_FILE)
         fi
         
         # 计算断网持续时间（秒）
-        current_timestamp=$(date '+%s')
-        duration=$((current_timestamp - disconnect_time))
+        local current_timestamp=$(date '+%s')
+        local duration=$((current_timestamp - disconnect_time))
         
         # 转换为可读格式（小时:分钟:秒）
-        hours=$((duration / 3600))
-        minutes=$(((duration % 3600) / 60))
-        seconds=$((duration % 60))
-        duration_readable="${hours}小时${minutes}分钟${seconds}秒"
+        local hours=$((duration / 3600))
+        local minutes=$(((duration % 3600) / 60))
+        local seconds=$((duration % 60))
+        local duration_readable="${hours}小时${minutes}分钟${seconds}秒"
         
         # 获取当前PCI5值
-        current_pci5=$(get_pci5_value)
+        local current_pci5=$(uci -q get cpecfg.cpesim1.pci5)
         
         # 构建消息内容
-        message="网络状态通知:\n- 断网时间: ${disconnect_readable_time}\n- 恢复时间: ${current_time}\n- 断网持续: ${duration_readable}\n- 当前PCI5值: ${current_pci5}"
+        local message="网络状态通知:\n- 断网时间: ${disconnect_readable_time}\n- 恢复时间: ${current_time}\n- 断网持续: ${duration_readable}\n- 当前PCI5值: ${current_pci5}"
         
         # 发送钉钉消息
         log_message "INFO" "准备发送钉钉通知消息"
@@ -243,9 +223,9 @@ handle_network_recovery() {
 # 检查是否在指定时间范围内（例如6:50-6:58，8:50-8:58，...，20:50-20:58）
 check_time_range() {
     # 获取当前小时和分钟
-    current_hour=$(date '+%H')
-    current_minute=$(date '+%M')
-    current_time="${current_hour}:${current_minute}"
+    local current_hour=$(date '+%H')
+    local current_minute=$(date '+%M')
+    local current_time="${current_hour}:${current_minute}"
 
     # 检查分钟是否在50-58之间
     if [ "$current_minute" -ge "50" ] && [ "$current_minute" -le "58" ]; then
@@ -274,7 +254,7 @@ main() {
         if [ ! -f $DISCONNECT_TIME_FILE ]; then
             # 记录断网时间（Unix时间戳和可读格式）
             date '+%s' > $DISCONNECT_TIME_FILE
-            readable_time=$(date '+%Y-%m-%d %H:%M:%S')
+            local readable_time=$(date '+%Y-%m-%d %H:%M:%S')
             echo "$readable_time" > $DISCONNECT_READABLE_TIME_FILE
             log_message "INFO" "网络断开，开始记录断网时间"
         else
