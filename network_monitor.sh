@@ -97,11 +97,10 @@ lock_cellular_sequence() {
         # 执行更新命令
         log_message "INFO" "开始执行更新命令: cpetools.sh -u"
         cpetools.sh -u
-        local update_result=$?
-        if [ $update_result -eq 0 ]; then
+        if [ $? -eq 0 ]; then
             log_message "INFO" "更新命令执行成功"
         else
-            log_message "WARN" "更新命令执行失败，退出码: $update_result"
+            log_message "WARN" "更新命令执行失败"
         fi
         # 记录切换时间
         date '+%s' > $LAST_SWITCH_TIME_FILE
@@ -137,11 +136,10 @@ lock_cellular_141() {
         # 执行更新命令
         log_message "INFO" "开始执行更新命令: cpetools.sh -u"
         cpetools.sh -u
-        local update_result=$?
-        if [ $update_result -eq 0 ]; then
+        if [ $? -eq 0 ]; then
             log_message "INFO" "更新命令执行成功"
         else
-            log_message "WARN" "更新命令执行失败，退出码: $update_result"
+            log_message "WARN" "更新命令执行失败"
         fi
         # 记录切换时间
         date '+%s' > $LAST_SWITCH_TIME_FILE
