@@ -14,8 +14,7 @@ DISCONNECT_TIME_FILE="/tmp/network_disconnect_time"
 # 断网时间的可读格式记录文件
 DISCONNECT_READABLE_TIME_FILE="/tmp/network_disconnect_readable_time"
 
-# 上次切换PCI5值的时间记录文件
-LAST_SWITCH_TIME_FILE="/tmp/last_pci5_switch_time"
+# 上次切换PCI5值的时间记录文件已移除
 
 # 日志记录函数
 # 参数1: 日志级别 (e.g., INFO, WARN, ERROR)
@@ -102,8 +101,6 @@ lock_cellular_sequence() {
         else
             log_message "WARN" "更新命令执行失败"
         fi
-        # 记录切换时间
-        date '+%s' > $LAST_SWITCH_TIME_FILE
         return 0
     else
         log_message "ERROR" "参数切换失败 (uci commit 失败)"
@@ -141,8 +138,6 @@ lock_cellular_141() {
         else
             log_message "WARN" "更新命令执行失败"
         fi
-        # 记录切换时间
-        date '+%s' > $LAST_SWITCH_TIME_FILE
         return 0
     else
         log_message "ERROR" "参数切换失败 (uci commit 失败)"
@@ -154,18 +149,18 @@ lock_cellular_141() {
 # 检查是否需要切换PCI5值
 # 返回值: 0 表示需要切换, 1 表示不需要切换
 should_switch_pci() {
-    if [ ! -f $LAST_SWITCH_TIME_FILE ]; then
-        return 0 # 需要切换
+    if [ ! -f $DISCONNECT_TIME_FILE ]; then
+        return 1 # 没有断网记录，不需要切换
     else
-        # 计算距离上次切换的时间（秒）
-        local last_switch_time=$(cat $LAST_SWITCH_TIME_FILE)
+        # 计算断网持续时间（秒）
+        local disconnect_time=$(cat $DISCONNECT_TIME_FILE)
         local current_time=$(date '+%s')
-        local time_since_last_switch=$((current_time - last_switch_time))
+        local disconnect_duration=$((current_time - disconnect_time))
         
-        if [ $time_since_last_switch -ge 50 ]; then
-            return 0 # 需要切换
+        if [ $disconnect_duration -ge 90 ]; then
+            return 0 # 断网时间超过90秒，需要切换
         else
-            return 1 # 不需要切换
+            return 1 # 断网时间不足90秒，不需要切换
         fi
     fi
 }

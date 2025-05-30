@@ -18,6 +18,5 @@ rm -f /etc/init.d/network_monitor
 rm -f /tmp/network_monitor.log
 rm -f /tmp/network_disconnect_time
 rm -f /tmp/network_disconnect_readable_time
-rm -f /tmp/last_pci5_switch_time
 
 echo "网络监控脚本已成功卸载。"
