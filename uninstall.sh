@@ -17,6 +17,5 @@ rm -f /etc/init.d/network_monitor
 # 删除临时文件
 rm -f /tmp/network_monitor.log
 rm -f /tmp/network_disconnect_time
-rm -f /tmp/network_disconnect_readable_time
 
 echo "网络监控脚本已成功卸载。"

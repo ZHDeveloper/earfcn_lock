@@ -1,20 +1,15 @@
 #!/bin/sh
 
 # 网络监控脚本
-# 功能：检测网络连接状态，在断网时按间隔切换PCI5值（距离上次切换超过50秒）
+# 功能：检测网络连接状态，在断网时按间隔切换PCI5值
 #       在网络恢复时发送钉钉通知消息
 #       在指定时间范围内（6:50-6:58，8:50-8:58，...，20:50-20:58）自动切换到earfcn5=633984,pci5=141
 
 # 日志文件路径
 LOG_FILE="/tmp/network_monitor.log"
 
-# 断网时间记录文件
+# 断网时间记录文件（包含Unix时间戳和可读格式，用|分隔）
 DISCONNECT_TIME_FILE="/tmp/network_disconnect_time"
-
-# 断网时间的可读格式记录文件
-DISCONNECT_READABLE_TIME_FILE="/tmp/network_disconnect_readable_time"
-
-# 上次切换PCI5值的时间记录文件已移除
 
 # 日志记录函数
 # 参数1: 日志级别 (e.g., INFO, WARN, ERROR)
@@ -68,6 +63,9 @@ lock_cellular_sequence() {
     local current_earfcn5=$(uci -q get cpecfg.cpesim1.earfcn5)
     
     # 根据当前组合确定下一个组合
+    local new_pci5
+    local new_earfcn5
+    
     if [ "$current_earfcn5" = "633984" ] && [ "$current_pci5" = "141" ]; then
         new_pci5="296"
         new_earfcn5="627264"
@@ -106,7 +104,6 @@ lock_cellular_sequence() {
         log_message "ERROR" "参数切换失败 (uci commit 失败)"
         return 1
     fi
-    
 }
 
 # 直接切换到earfcn5=633984,pci5=141（用于有网络时）
@@ -120,8 +117,8 @@ lock_cellular_141() {
         return 0
     fi
     
-    new_pci5="141"
-    new_earfcn5="633984"
+    local new_pci5="141"
+    local new_earfcn5="633984"
     
     # 使用uci设置earfcn5和pci5值
     uci set cpecfg.cpesim1.pci5="$new_pci5"
@@ -143,17 +140,16 @@ lock_cellular_141() {
         log_message "ERROR" "参数切换失败 (uci commit 失败)"
         return 1
     fi
-    
 }
 
 # 检查是否需要切换PCI5值
 # 返回值: 0 表示需要切换, 1 表示不需要切换
 should_switch_pci() {
-    if [ ! -f $DISCONNECT_TIME_FILE ]; then
+    if [ ! -f "$DISCONNECT_TIME_FILE" ]; then
         return 1 # 没有断网记录，不需要切换
     else
         # 计算断网持续时间（秒）
-        local disconnect_time=$(cat $DISCONNECT_TIME_FILE)
+        local disconnect_time=$(cat $DISCONNECT_TIME_FILE | cut -d'|' -f1)
         local current_time=$(date '+%s')
         local disconnect_duration=$((current_time - disconnect_time))
         
@@ -172,14 +168,10 @@ handle_network_recovery() {
         # 获取当前时间
         local current_time=$(date '+%Y-%m-%d %H:%M:%S')
         
-        # 获取断网时间（Unix时间戳）
-        local disconnect_time=$(cat $DISCONNECT_TIME_FILE)
-        
-        # 获取可读的断网时间
-        local disconnect_readable_time="未知"
-        if [ -f $DISCONNECT_READABLE_TIME_FILE ]; then
-            disconnect_readable_time=$(cat $DISCONNECT_READABLE_TIME_FILE)
-        fi
+        # 从文件中分别提取时间戳和可读时间
+        local time_data=$(cat $DISCONNECT_TIME_FILE)
+        local disconnect_time=$(echo "$time_data" | cut -d'|' -f1)
+        local disconnect_readable_time=$(echo "$time_data" | cut -d'|' -f2)
         
         # 计算断网持续时间（秒）
         local current_timestamp=$(date '+%s')
@@ -209,7 +201,6 @@ handle_network_recovery() {
         
         # 删除断网时间记录文件
         rm -f $DISCONNECT_TIME_FILE
-        rm -f $DISCONNECT_READABLE_TIME_FILE
     fi
 }
 
@@ -221,7 +212,7 @@ check_time_range() {
     local current_time="${current_hour}:${current_minute}"
 
     # 检查分钟是否在50-58之间
-    if [ "$current_minute" -ge "50" ] && [ "$current_minute" -le "58" ]; then
+    if [ "$current_minute" -ge 50 ] && [ "$current_minute" -le 58 ]; then
         # 检查小时是否为6, 8, 10, 12, 14, 16, 18, 20
         case "$current_hour" in
             "06"|"08"|"10"|"12"|"14"|"16"|"18"|"20")
@@ -234,7 +225,6 @@ check_time_range() {
     else
         return 1  # 不在时间范围内 (分钟不匹配)
     fi
-    
 }
 
 # 主程序
@@ -244,11 +234,11 @@ main() {
     # 检查网络连接
     if ! check_network; then
         # 网络断开
-        if [ ! -f $DISCONNECT_TIME_FILE ]; then
-            # 记录断网时间（Unix时间戳和可读格式）
-            date '+%s' > $DISCONNECT_TIME_FILE
+        if [ ! -f "$DISCONNECT_TIME_FILE" ]; then
+            # 记录断网时间（Unix时间戳和可读格式，用|分隔）
+            local timestamp=$(date '+%s')
             local readable_time=$(date '+%Y-%m-%d %H:%M:%S')
-            echo "$readable_time" > $DISCONNECT_READABLE_TIME_FILE
+            echo "${timestamp}|${readable_time}" > $DISCONNECT_TIME_FILE
             log_message "INFO" "网络断开，开始记录断网时间"
         else
             # 检查是否需要切换PCI5值
