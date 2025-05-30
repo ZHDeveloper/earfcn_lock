@@ -41,14 +41,11 @@ check_network() {
     # 尝试ping多个目标以确保可靠性
     local ping_result=1
     
-    if ping -c 1 8.8.8.8 > /dev/null 2>&1; then
-        log_message "INFO" "网络检测：ping 8.8.8.8 成功"
+    if ping -c 1 -W 1 8.8.8.8 > /dev/null 2>&1; then
         ping_result=0
-    elif ping -c 1 114.114.114.114 > /dev/null 2>&1; then
-        log_message "INFO" "网络检测：ping 114.114.114.114 成功"
+    elif ping -c 1 -W 1 114.114.114.114 > /dev/null 2>&1; then
         ping_result=0
-    elif ping -c 1 www.baidu.com > /dev/null 2>&1; then
-        log_message "INFO" "网络检测：ping www.baidu.com 成功"
+    elif ping -c 1 -W 1 www.baidu.com > /dev/null 2>&1; then
         ping_result=0
     else
         log_message "WARN" "网络检测：所有ping目标均失败"
@@ -113,7 +110,6 @@ lock_cellular_141() {
 
     # 如果当前参数已经是目标组合，则无需切换
     if [ "$current_earfcn5" = "633984" ] && [ "$current_pci5" = "141" ]; then
-        log_message "INFO" "当前参数已经是 earfcn5=633984,pci5=141，无需切换"
         return 0
     fi
     
@@ -228,9 +224,7 @@ check_time_range() {
 }
 
 # 主程序
-main() {
-    log_message "INFO" "========== 开始执行网络监控检查 =========="
-    
+main() {    
     # 检查网络连接
     if ! check_network; then
         # 网络断开
@@ -259,8 +253,6 @@ main() {
         # 处理网络恢复
         handle_network_recovery
     fi
-    
-    log_message "INFO" "========== 网络监控检查完成 =========="
 }
 
 # 命令行参数处理
