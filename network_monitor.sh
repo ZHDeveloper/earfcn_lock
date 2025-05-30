@@ -71,10 +71,13 @@ lock_cellular_sequence() {
         new_earfcn5="633984"
     elif [ "$current_earfcn5" = "633984" ] && [ "$current_pci5" = "189" ]; then
         new_pci5="739"
+        new_earfcn5="627264"
+    elif [ "$current_earfcn5" = "627264" ] && [ "$current_pci5" = "739" ]; then
+        new_pci5="93"
         new_earfcn5="633984"
-    elif [ "$current_earfcn5" = "633984" ] && [ "$current_pci5" = "739" ]; then
+    elif [ "$current_earfcn5" = "633984" ] && [ "$current_pci5" = "93" ]; then
         new_pci5="141"
-        new_earfcn5="633984"
+        new_earfcn5="627264"
     else
         # 如果当前组合不在预期范围内，重置为第一个组合
         new_pci5="141"
