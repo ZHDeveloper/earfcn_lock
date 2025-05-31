@@ -14,6 +14,8 @@ start_service() {
     echo "* * * * * /bin/sh /root/network_monitor.sh" >> /etc/crontabs/root
     # 添加每天00:00清空日志的定时任务
     echo "0 0 * * * > /tmp/network_monitor.log" >> /etc/crontabs/root
+    # 添加每天00:00清空/var/log/cron内容的定时任务
+    echo "0 0 * * * > /var/log/cron" >> /etc/crontabs/root
     /etc/init.d/cron restart
 }
 
@@ -21,6 +23,7 @@ stop_service() {
     # 从crontab中移除
     sed -i '/network_monitor.sh/d' /etc/crontabs/root
     sed -i '/\/tmp\/network_monitor.log/d' /etc/crontabs/root
+    sed -i '/\/var\/log\/cron/d' /etc/crontabs/root
     /etc/init.d/cron restart
 }
 
