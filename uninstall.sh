@@ -11,7 +11,6 @@ sed -i '/network_monitor.sh/d' /etc/crontabs/root
 /etc/init.d/cron restart
 
 # 删除文件
-rm -f /root/network_monitor.sh
 rm -f /etc/init.d/network_monitor
 
 # 删除临时文件

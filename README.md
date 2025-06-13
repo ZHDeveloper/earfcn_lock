@@ -28,7 +28,7 @@
 1. 将网络监控脚本复制到设备：
    ```
    cp network_monitor.sh /root/
-   chmod +x /root/network_monitor.sh
+   chmod +x /etc/config/earfcn_lock/network_monitor.sh
    ```
 
 2. 将启动脚本复制到init.d目录：
@@ -91,5 +91,5 @@ chmod +x uninstall.sh
 
 如需手动运行脚本，可执行：
 ```
-/bin/sh /root/network_monitor.sh
+/bin/sh /etc/config/earfcn_lock/network_monitor.sh
 ```
