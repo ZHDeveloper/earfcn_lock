@@ -116,7 +116,7 @@ select_best_frequency() {
     local available_combinations=$(parse_scan_result "$scan_data")
     
     # PCI优先级列表
-    local priority_pcis="141 296 189 93"
+    local priority_pcis="141 189 296 93"
     
     log_message "INFO" "可用频点组合: $available_combinations"
     
