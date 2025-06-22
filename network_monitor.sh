@@ -72,13 +72,14 @@ check_network() {
 # 扫描附近频点
 scan_frequencies() {
     log_message "INFO" "开始扫描附近频点"
-    local scan_result=$(cpetools.sh -i cpe -c scan /var/cpescan_cache_last_cpe 2>/dev/null)
-    if [ $? -eq 0 ] && [ -n "$scan_result" ]; then
-        log_message "INFO" "频点扫描成功"
+    cpetools.sh -i cpe -c scan > /var/cpescan_cache_last_cpe
+    if [ $? -eq 0 ] && [ -s "/var/cpescan_cache_last_cpe" ]; then
+        log_message "INFO" "频点扫描成功，结果已保存到 /var/cpescan_cache_last_cpe"
+        local scan_result=$(cat /var/cpescan_cache_last_cpe)
         echo "$scan_result"
         return 0
     else
-        log_message "ERROR" "频点扫描失败"
+        log_message "ERROR" "频点扫描失败或结果为空"
         return 1
     fi
 }
@@ -86,35 +87,27 @@ scan_frequencies() {
 # 从扫描结果中提取可用的PCI、EARFCN和RSRP组合
 parse_scan_result() {
     local scan_data="$1"
-    # 使用awk解析JSON数据，提取PCI、EARFCN和RSRP
-    echo "$scan_data" | awk '
-    BEGIN { RS="}"; FS="," }
-    /"PCI":/ {
-        pci=""; earfcn=""; rsrp=""
-        for(i=1; i<=NF; i++) {
-            if($i ~ /"PCI":/) {
-                gsub(/.*"PCI":[ ]*"?/, "", $i)
-                gsub(/"?[,}].*/, "", $i)
-                gsub(/"/, "", $i)
-                pci=$i
-            }
-            if($i ~ /"EARFCN":/) {
-                gsub(/.*"EARFCN":[ ]*"?/, "", $i)
-                gsub(/"?[,}].*/, "", $i)
-                gsub(/"/, "", $i)
-                earfcn=$i
-            }
-            if($i ~ /"RSRP":/) {
-                gsub(/.*"RSRP":[ ]*"?/, "", $i)
-                gsub(/"?[,}].*/, "", $i)
-                gsub(/"/, "", $i)
-                rsrp=$i
-            }
-        }
-        if(pci != "" && earfcn != "" && rsrp != "") {
-            print earfcn "|" pci "|" rsrp
-        }
-    }'
+    # 使用更简单的方法：直接用grep和sed提取每个cell的信息
+    # 先分割成单独的cell记录，然后逐个解析
+    echo "$scan_data" | sed 's/}, {/}\n{/g' | sed 's/\[{/{/g' | sed 's/}\]/}/g' | \
+    while IFS= read -r cell_data; do
+        if echo "$cell_data" | grep -q '"MODE":[ ]*"NR"'; then
+            # 先移除lockneed部分，避免干扰
+            clean_data=$(echo "$cell_data" | sed 's/"lockneed".*$//')
+
+            # 提取EARFCN (确保不是lockneed中的EARFCN)
+            earfcn=$(echo "$clean_data" | sed -n 's/.*"EARFCN":[ ]*"\([^"]*\)".*/\1/p' | head -1)
+            # 提取PCI (确保不是lockneed中的PCI)
+            pci=$(echo "$clean_data" | sed -n 's/.*"PCI":[ ]*"\([^"]*\)".*/\1/p' | head -1)
+            # 提取RSRP
+            rsrp=$(echo "$clean_data" | sed -n 's/.*"RSRP":[ ]*"\([^"]*\)".*/\1/p' | head -1)
+
+            # 如果三个值都提取到了，输出结果
+            if [ -n "$earfcn" ] && [ -n "$pci" ] && [ -n "$rsrp" ]; then
+                echo "$earfcn|$pci|$rsrp"
+            fi
+        fi
+    done
 }
 
 # 按PCI优先级选择最佳频点组合
