@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # 网络监控脚本 - 开机启动守护进程版本
-# 功能：每5秒检测网络连接状态，断网90秒后扫描频点并按PCI优先级锁频
+# 功能：每5秒检测网络连接状态，断网50秒后扫描频点并按PCI优先级锁频
 #       在网络恢复时发送钉钉通知消息
 #       在指定时间点（6:50，8:50，12:50，14:50，16:50，18:50，20:50）检查是否需要切换到PCI 141
 
@@ -116,7 +116,7 @@ select_best_frequency() {
     local available_combinations=$(parse_scan_result "$scan_data")
     
     # PCI优先级列表
-    local priority_pcis="141 189 296 93"
+    local priority_pcis="141 296 189 93"
     
     log_message "INFO" "可用频点组合: $available_combinations"
     
@@ -275,10 +275,10 @@ should_do_smart_lock() {
         local current_time=$(date '+%s')
         local disconnect_duration=$((current_time - disconnect_time))
         
-        if [ $disconnect_duration -ge 90 ]; then
-            return 0 # 断网时间超过90秒，需要智能锁频
+        if [ $disconnect_duration -ge 50 ]; then
+            return 0 # 断网时间超过50秒，需要智能锁频
         else
-            return 1 # 断网时间不足90秒，不需要锁频
+            return 1 # 断网时间不足50秒，不需要锁频
         fi
     fi
 }
@@ -432,7 +432,7 @@ perform_network_monitoring() {
         else
             # 检查是否需要进行智能锁频
             if should_do_smart_lock; then
-                # 断网超过90秒，进行智能锁频
+                # 断网超过50秒，进行智能锁频
                 handle_network_disconnect
             fi
         fi
@@ -587,7 +587,7 @@ case "$1" in
         echo ""
         echo "守护进程功能:"
         echo "  - 每5秒检测网络连接状态"
-        echo "  - 断网90秒后扫描频点并按PCI优先级锁频"
+        echo "  - 断网50秒后扫描频点并按PCI优先级锁频"
         echo "  - 锁频后50秒内不检测网络，50秒后恢复检测"
         echo "  - 在6:50,8:50,12:50,14:50,16:50,18:50,20:50检查PCI 141"
         echo "  - 网络恢复时发送钉钉通知"
