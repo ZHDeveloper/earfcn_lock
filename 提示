@@ -1,0 +1,15 @@
+帮我重构脚本network_monitor.sh，不是定时执行。而是开机启动执行脚本。每5s检测是否有网check_network，如果没网记录断网时间，如果断网超过90s。
+调用cpetools.sh -i cpe -c scan /var/cpescan_cache_last_cpe查看附近的频点：
+
+根据返回的数据，按照下面的PCI优先级进行锁频。锁频的60s内不用检测网络。50s后继续检查网络情况。6点50，8点50，12点50，14点50，16点50，18点50，20点50，如果当前PCI不是141，那么扫描频点，如果有141，则切换到141.
+
+PCI锁频优先级：
+[ "$current_pci5" = "141" ]
+[ "$current_pci5" = "189" ]
+[ "$current_pci5" = "296" ]
+[ "$current_pci5" = "739" ]
+[ "$current_pci5" = "93" ];
+
+cpetools.sh -i cpe -c scan /var/cpescan_cache_last_cpe 返回数据如下：
+root@router:~# cpetools.sh -i cpe -c scan /var/cpescan_cache_last_cpe
+{ "scanlist": [ { "MODE": "NR", "EARFCN": "627264", "PCI": "296", "CELL": "7589ae086", "RSRP": "-70", "BAND": "78", "ISP": "46001", "lockneed": { "MODE": "1", "EARFCN": "1", "BAND": "1", "PCI": "0" } }, { "MODE": "NR", "EARFCN": "627264", "PCI": "9", "CELL": "758851006", "RSRP": "-77", "BAND": "78", "ISP": "46001", "lockneed": { "MODE": "1", "EARFCN": "1", "BAND": "1", "PCI": "0" } }, { "MODE": "NR", "EARFCN": "633984", "PCI": "189", "CELL": "759156008", "RSRP": "-83", "BAND": "78", "ISP": "46001", "lockneed": { "MODE": "1", "EARFCN": "1", "BAND": "1", "PCI": "0" } }, { "MODE": "NR", "EARFCN": "627264", "PCI": "664", "CELL": "759155088", "RSRP": "-76", "BAND": "78", "ISP": "46001", "lockneed": { "MODE": "1", "EARFCN": "1", "BAND": "1", "PCI": "0" } }, { "MODE": "NR", "EARFCN": "633984", "PCI": "529", "CELL": "75915500d", "RSRP": "-89", "BAND": "78", "ISP": "46001", "lockneed": { "MODE": "1", "EARFCN": "1", "BAND": "1", "PCI": "0" } }, { "MODE": "NR", "EARFCN": "620640", "PCI": "472", "CELL": "75940e083", "RSRP": "-100", "BAND": "78", "ISP": "46001", "lockneed": { "MODE": "1", "EARFCN": "1", "BAND": "1", "PCI": "0" } } ] }

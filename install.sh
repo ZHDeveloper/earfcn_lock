@@ -6,9 +6,6 @@
 chmod +x network_monitor.sh
 chmod +x network_monitor_init
 
-# 复制网络监控脚本到根目录
-cp network_monitor.sh /root/
-
 # 复制启动脚本到init.d目录
 cp network_monitor_init /etc/init.d/network_monitor
 chmod +x /etc/init.d/network_monitor
@@ -18,4 +15,7 @@ chmod +x /etc/init.d/network_monitor
 /etc/init.d/network_monitor start
 
 echo "网络监控脚本已安装并启用。"
-echo "服务已添加到开机启动项，并设置为每分钟执行一次。"
+echo "守护进程已添加到开机启动项，将在系统启动时自动运行。"
+echo "脚本路径: /etc/config/earfcn_lock/network_monitor.sh"
+echo "日志文件: /tmp/network_monitor.log"
+echo "使用 '/etc/init.d/network_monitor status' 查看运行状态"

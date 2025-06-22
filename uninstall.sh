@@ -12,9 +12,11 @@ sed -i '/network_monitor.sh/d' /etc/crontabs/root
 
 # 删除文件
 rm -f /etc/init.d/network_monitor
+rm -f /etc/config/earfcn_lock/network_monitor.sh
+rmdir /etc/config/earfcn_lock 2>/dev/null || true
 
 # 删除临时文件
 rm -f /tmp/network_monitor.log
-rm -f /tmp/network_disconnect_time
+rm -f /tmp/network_monitor.pid
 
 echo "网络监控脚本已成功卸载。"

@@ -6,25 +6,17 @@ USE_PROCD=1
 
 start_service() {
     procd_open_instance
-    procd_set_param command /bin/sh /etc/config/earfcn_lock/network_monitor.sh
+    procd_set_param command /bin/sh /etc/config/earfcn_lock/network_monitor.sh start
     procd_set_param respawn
+    procd_set_param respawn_threshold 10
+    procd_set_param respawn_timeout 5
+    procd_set_param respawn_retry 5
     procd_close_instance
-    
-    # 添加到crontab以每分钟执行一次
-    echo "* * * * * /bin/sh /etc/config/earfcn_lock/network_monitor.sh" >> /etc/crontabs/root
-    # 添加每天00:00清空日志的定时任务
-    echo "0 0 * * * > /tmp/network_monitor.log" >> /etc/crontabs/root
-    # 添加每天00:00清空/var/log/cron内容的定时任务
-    echo "0 0 * * * > /var/log/cron" >> /etc/crontabs/root
-    /etc/init.d/cron restart
 }
 
 stop_service() {
-    # 从crontab中移除
-    sed -i '/network_monitor.sh/d' /etc/crontabs/root
-    sed -i '/\/tmp\/network_monitor.log/d' /etc/crontabs/root
-    sed -i '/\/var\/log\/cron/d' /etc/crontabs/root
-    /etc/init.d/cron restart
+    # 停止守护进程
+    /bin/sh /etc/config/earfcn_lock/network_monitor.sh stop
 }
 
 reload_service() {

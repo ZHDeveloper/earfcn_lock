@@ -1,15 +1,24 @@
 #!/bin/sh
 
-# 网络监控脚本
-# 功能：检测网络连接状态，在断网时按间隔切换PCI5值
+# 网络监控脚本 - 开机启动守护进程版本
+# 功能：每5秒检测网络连接状态，断网90秒后扫描频点并按PCI优先级锁频
 #       在网络恢复时发送钉钉通知消息
-#       在指定时间范围内（6:50-6:58，8:50-8:58，...，20:50-20:58）自动切换到earfcn5=633984,pci5=141
+#       在指定时间点（6:50，8:50，12:50，14:50，16:50，18:50，20:50）检查是否需要切换到PCI 141
 
 # 日志文件路径
 LOG_FILE="/tmp/network_monitor.log"
 
-# 断网时间记录文件（包含Unix时间戳和可读格式，用|分隔）
-DISCONNECT_TIME_FILE="/tmp/network_disconnect_time"
+# PID文件
+PID_FILE="/tmp/network_monitor.pid"
+
+# 全局变量：断网时间记录（Unix时间戳|可读格式）
+DISCONNECT_TIME=""
+
+# 全局变量：锁频时间记录（Unix时间戳）
+LOCK_TIME=""
+
+# 全局变量：上次日志清理日期
+LAST_LOG_CLEAR_DATE=""
 
 # 日志记录函数
 # 参数1: 日志级别 (e.g., INFO, WARN, ERROR)
@@ -54,123 +63,210 @@ check_network() {
     return $ping_result
 }
 
-# 顺序切换earfcn5和pci5值（用于断网时）
-lock_cellular_sequence() {
+# 扫描附近频点
+scan_frequencies() {
+    log_message "INFO" "开始扫描附近频点"
+    local scan_result=$(cpetools.sh -i cpe -c scan /var/cpescan_cache_last_cpe 2>/dev/null)
+    if [ $? -eq 0 ] && [ -n "$scan_result" ]; then
+        log_message "INFO" "频点扫描成功"
+        echo "$scan_result"
+        return 0
+    else
+        log_message "ERROR" "频点扫描失败"
+        return 1
+    fi
+}
+
+# 从扫描结果中提取可用的PCI和EARFCN组合
+parse_scan_result() {
+    local scan_data="$1"
+    # 使用awk解析JSON数据，提取PCI和EARFCN
+    echo "$scan_data" | awk '
+    BEGIN { RS="}"; FS="," }
+    /"PCI":/ {
+        pci=""; earfcn=""
+        for(i=1; i<=NF; i++) {
+            if($i ~ /"PCI":/) {
+                gsub(/.*"PCI":[ ]*"/, "", $i)
+                gsub(/".*/, "", $i)
+                pci=$i
+            }
+            if($i ~ /"EARFCN":/) {
+                gsub(/.*"EARFCN":[ ]*"/, "", $i)
+                gsub(/".*/, "", $i)
+                earfcn=$i
+            }
+        }
+        if(pci != "" && earfcn != "") {
+            print earfcn "|" pci
+        }
+    }'
+}
+
+# 按PCI优先级选择最佳频点组合
+select_best_frequency() {
+    local scan_data="$1"
+    local available_combinations=$(parse_scan_result "$scan_data")
+    
+    # PCI优先级列表
+    local priority_pcis="141 189 296 739 93"
+    
+    log_message "INFO" "可用频点组合: $available_combinations"
+    
+    # 按优先级查找可用的PCI
+    for priority_pci in $priority_pcis; do
+        local match=$(echo "$available_combinations" | grep "|$priority_pci$" | head -1)
+        if [ -n "$match" ]; then
+            local earfcn=$(echo "$match" | cut -d'|' -f1)
+            local pci=$(echo "$match" | cut -d'|' -f2)
+            log_message "INFO" "选择频点组合: EARFCN=$earfcn, PCI=$pci (优先级: $priority_pci)"
+            echo "$earfcn|$pci"
+            return 0
+        fi
+    done
+    
+    log_message "WARN" "未找到优先级PCI，使用第一个可用组合"
+    echo "$available_combinations" | head -1
+    return 1
+}
+
+# 锁定到指定频点
+lock_to_frequency() {
+    local earfcn="$1"
+    local pci="$2"
+    
+    if [ -z "$earfcn" ] || [ -z "$pci" ]; then
+        log_message "ERROR" "锁频参数无效: EARFCN=$earfcn, PCI=$pci"
+        return 1
+    fi
+    
     local current_pci5=$(uci -q get cpecfg.cpesim1.pci5)
     local current_earfcn5=$(uci -q get cpecfg.cpesim1.earfcn5)
     
-    # 根据当前组合确定下一个组合
-    local new_pci5
-    local new_earfcn5
-    
-    if [ "$current_earfcn5" = "633984" ] && [ "$current_pci5" = "141" ]; then
-        new_pci5="189"
-        new_earfcn5="633984"
-    elif [ "$current_earfcn5" = "633984" ] && [ "$current_pci5" = "189" ]; then
-        new_pci5="296"
-        new_earfcn5="627264"
-    elif [ "$current_earfcn5" = "627264" ] && [ "$current_pci5" = "296" ]; then
-        new_pci5="739"
-        new_earfcn5="627264"
-    elif [ "$current_earfcn5" = "627264" ] && [ "$current_pci5" = "739" ]; then
-        new_pci5="93"
-        new_earfcn5="633984"
-    elif [ "$current_earfcn5" = "633984" ] && [ "$current_pci5" = "93" ]; then
-        new_pci5="141"
-        new_earfcn5="633984"
-    else
-        # 如果当前组合不在预期范围内，重置为第一个组合
-        new_pci5="141"
-        new_earfcn5="633984"
+    # 如果当前参数已经是目标组合，则无需切换
+    if [ "$current_earfcn5" = "$earfcn" ] && [ "$current_pci5" = "$pci" ]; then
+        log_message "INFO" "当前已是目标频点组合 EARFCN=$earfcn, PCI=$pci，无需切换"
+        return 0
     fi
-        
+    
     # 使用uci设置earfcn5和pci5值
-    uci set cpecfg.cpesim1.pci5="$new_pci5"
-    uci set cpecfg.cpesim1.earfcn5="$new_earfcn5"
+    uci set cpecfg.cpesim1.pci5="$pci"
+    uci set cpecfg.cpesim1.earfcn5="$earfcn"
     uci commit cpecfg
     
     if [ $? -eq 0 ]; then
-        log_message "INFO" "参数已从 earfcn5=$current_earfcn5,pci5=$current_pci5 切换到 earfcn5=$new_earfcn5,pci5=$new_pci5"
+        log_message "INFO" "参数已从 earfcn5=$current_earfcn5,pci5=$current_pci5 切换到 earfcn5=$earfcn,pci5=$pci"
         # 执行更新命令
         log_message "INFO" "开始执行更新命令: cpetools.sh -u"
         cpetools.sh -u
         if [ $? -eq 0 ]; then
             log_message "INFO" "更新命令执行成功"
+            # 记录锁频时间，60秒内不检测网络
+            LOCK_TIME="$(date '+%s')"
+            return 0
         else
             log_message "WARN" "更新命令执行失败"
+            return 1
         fi
-        return 0
     else
         log_message "ERROR" "参数切换失败 (uci commit 失败)"
         return 1
     fi
 }
 
-# 直接切换到earfcn5=633984,pci5=141（用于有网络时）
+# 断网时的智能锁频处理
+handle_network_disconnect() {
+    log_message "INFO" "开始处理断网情况，扫描并锁定最佳频点"
+    
+    local scan_result=$(scan_frequencies)
+    if [ $? -eq 0 ] && [ -n "$scan_result" ]; then
+        local best_combination=$(select_best_frequency "$scan_result")
+        if [ -n "$best_combination" ]; then
+            local earfcn=$(echo "$best_combination" | cut -d'|' -f1)
+            local pci=$(echo "$best_combination" | cut -d'|' -f2)
+            lock_to_frequency "$earfcn" "$pci"
+        else
+            log_message "ERROR" "无法选择最佳频点组合"
+        fi
+    else
+        log_message "ERROR" "频点扫描失败，无法进行智能锁频"
+    fi
+}
+
+# 检查是否在锁频等待期内（锁频后60秒内不检测网络，50秒后恢复检测）
+is_in_lock_wait_period() {
+    if [ -z "$LOCK_TIME" ]; then
+        return 1 # 没有锁频记录，不在等待期
+    fi
+    
+    local current_time=$(date '+%s')
+    local elapsed_time=$((current_time - LOCK_TIME))
+    
+    if [ $elapsed_time -lt 50 ]; then
+        return 0 # 在等待期内
+    else
+        # 超过50秒，清空锁频记录变量
+        LOCK_TIME=""
+        return 1 # 不在等待期
+    fi
+}
+
+# 直接切换到earfcn5=633984,pci5=141（用于特定时间点检查）
 lock_cellular_141() {
     local current_pci5=$(uci -q get cpecfg.cpesim1.pci5)
-    local current_earfcn5=$(uci -q get cpecfg.cpesim1.earfcn5)
-
-    # 如果当前参数已经是目标组合，则无需切换
-    if [ "$current_earfcn5" = "633984" ] && [ "$current_pci5" = "141" ]; then
+    
+    # 如果当前PCI已经是141，则无需处理
+    if [ "$current_pci5" = "141" ]; then
         return 0
     fi
     
-    local new_pci5="141"
-    local new_earfcn5="633984"
+    log_message "INFO" "当前PCI不是141，开始扫描频点查找PCI 141"
     
-    # 使用uci设置earfcn5和pci5值
-    uci set cpecfg.cpesim1.pci5="$new_pci5"
-    uci set cpecfg.cpesim1.earfcn5="$new_earfcn5"
-    uci commit cpecfg
-
-    if [ $? -eq 0 ]; then
-        log_message "INFO" "参数已从 earfcn5=$current_earfcn5,pci5=$current_pci5 切换到 earfcn5=$new_earfcn5,pci5=$new_pci5"
-        # 执行更新命令
-        log_message "INFO" "开始执行更新命令: cpetools.sh -u"
-        cpetools.sh -u
-        if [ $? -eq 0 ]; then
-            log_message "INFO" "更新命令执行成功"
+    local scan_result=$(scan_frequencies)
+    if [ $? -eq 0 ] && [ -n "$scan_result" ]; then
+        # 查找PCI 141的频点组合
+        local pci_141_combination=$(parse_scan_result "$scan_result" | grep "|141$")
+        if [ -n "$pci_141_combination" ]; then
+            local earfcn=$(echo "$pci_141_combination" | cut -d'|' -f1)
+            log_message "INFO" "找到PCI 141，EARFCN=$earfcn，开始切换"
+            lock_to_frequency "$earfcn" "141"
         else
-            log_message "WARN" "更新命令执行失败"
+            log_message "WARN" "扫描结果中未找到PCI 141"
         fi
-        return 0
     else
-        log_message "ERROR" "参数切换失败 (uci commit 失败)"
-        return 1
+        log_message "ERROR" "频点扫描失败，无法检查PCI 141"
     fi
 }
 
-# 检查是否需要切换PCI5值
-# 返回值: 0 表示需要切换, 1 表示不需要切换
-should_switch_pci() {
-    if [ ! -f "$DISCONNECT_TIME_FILE" ]; then
-        return 1 # 没有断网记录，不需要切换
+# 检查是否需要进行智能锁频
+# 返回值: 0 表示需要锁频, 1 表示不需要锁频
+should_do_smart_lock() {
+    if [ -z "$DISCONNECT_TIME" ]; then
+        return 1 # 没有断网记录，不需要锁频
     else
         # 计算断网持续时间（秒）
-        local disconnect_time=$(cat $DISCONNECT_TIME_FILE | cut -d'|' -f1)
+        local disconnect_time=$(echo "$DISCONNECT_TIME" | cut -d'|' -f1)
         local current_time=$(date '+%s')
         local disconnect_duration=$((current_time - disconnect_time))
         
         if [ $disconnect_duration -ge 90 ]; then
-            return 0 # 断网时间超过90秒，需要切换
+            return 0 # 断网时间超过90秒，需要智能锁频
         else
-            return 1 # 断网时间不足90秒，不需要切换
+            return 1 # 断网时间不足90秒，不需要锁频
         fi
     fi
 }
 
 # 处理网络恢复的函数
 handle_network_recovery() {
-    # 如果存在断网记录则发送钉钉消息并删除记录文件
-    if [ -f $DISCONNECT_TIME_FILE ]; then
+    # 如果存在断网记录则发送钉钉消息并清空记录变量
+    if [ -n "$DISCONNECT_TIME" ]; then
         # 获取当前时间
         local current_time=$(date '+%Y-%m-%d %H:%M:%S')
         
-        # 从文件中分别提取时间戳和可读时间
-        local time_data=$(cat $DISCONNECT_TIME_FILE)
-        local disconnect_time=$(echo "$time_data" | cut -d'|' -f1)
-        local disconnect_readable_time=$(echo "$time_data" | cut -d'|' -f2)
+        # 从变量中分别提取时间戳和可读时间
+        local disconnect_time=$(echo "$DISCONNECT_TIME" | cut -d'|' -f1)
+        local disconnect_readable_time=$(echo "$DISCONNECT_TIME" | cut -d'|' -f2)
         
         # 计算断网持续时间（秒）
         local current_timestamp=$(date '+%s')
@@ -198,58 +294,219 @@ handle_network_recovery() {
             log_message "WARN" "网络已恢复连接，钉钉通知发送失败，退出码: $dingtalk_result"
         fi
         
-        # 删除断网时间记录文件
-        rm -f $DISCONNECT_TIME_FILE
+        # 清空断网时间记录变量
+        DISCONNECT_TIME=""
     fi
 }
 
-# 检查是否在指定时间范围内（例如6:50-6:58，8:50-8:58，...，20:50-20:58）
-check_time_range() {
+# 检查是否在指定时间点（6:50，8:50，12:50，14:50，16:50，18:50，20:50）
+check_specific_time() {
     # 获取当前小时和分钟
     local current_hour=$(date '+%H')
     local current_minute=$(date '+%M')
     local current_time="${current_hour}:${current_minute}"
 
-    # 检查分钟是否在50-58之间
-    if [ "$current_minute" -ge 50 ] && [ "$current_minute" -le 58 ]; then
-        # 检查小时是否为6, 8, 10, 12, 14, 16, 18, 20
-        case "$current_hour" in
-            "06"|"08"|"10"|"12"|"14"|"16"|"18"|"20")
-                return 0  # 在时间范围内
-                ;;
-            *)
-                return 1  # 不在时间范围内 (小时不匹配)
-                ;;
-        esac
-    else
-        return 1  # 不在时间范围内 (分钟不匹配)
+    # 检查是否为指定的时间点
+    case "$current_time" in
+        "06:50"|"08:50"|"12:50"|"14:50"|"16:50"|"18:50"|"20:50")
+            return 0  # 是指定时间点
+            ;;
+        *)
+            return 1  # 不是指定时间点
+            ;;
+    esac
+}
+
+# 检查并清空日志文件的函数
+# 每天0:00清空日志文件，或者当日志文件大于10MB时清空
+check_and_clear_log() {
+    local current_date=$(date '+%Y-%m-%d')
+    local current_hour=$(date '+%H')
+    local current_minute=$(date '+%M')
+    local should_clear=false
+    local clear_reason=""
+    
+    # 检查是否为每天0:00
+    if [ "$current_hour" = "00" ] && [ "$current_minute" = "00" ]; then
+        if [ "$LAST_LOG_CLEAR_DATE" != "$current_date" ]; then
+            should_clear=true
+            clear_reason="每日定时清理"
+            LAST_LOG_CLEAR_DATE="$current_date"
+        fi
+    fi
+    
+    # 检查日志文件大小是否超过10MB
+    if [ -f "$LOG_FILE" ]; then
+        # 获取文件大小（字节）
+        local file_size=$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)
+        # 10MB = 10485760 字节
+        if [ "$file_size" -gt 10485760 ]; then
+            should_clear=true
+            clear_reason="文件大小超过10MB"
+        fi
+    fi
+    
+    # 执行清空操作
+    if [ "$should_clear" = true ]; then
+        # 备份最后几行日志信息
+        local backup_info=""
+        if [ -f "$LOG_FILE" ]; then
+            backup_info=$(tail -n 5 "$LOG_FILE" 2>/dev/null || echo "")
+        fi
+        
+        # 清空日志文件
+        > "$LOG_FILE"
+        
+        # 记录清理操作
+        log_message "INFO" "日志文件已清空 - 原因: $clear_reason"
+        log_message "INFO" "清理时间: $(date '+%Y-%m-%d %H:%M:%S')"
+        
+        # 如果有备份信息，记录最后的状态
+        if [ -n "$backup_info" ]; then
+            log_message "INFO" "清理前最后状态:"
+            echo "$backup_info" | while IFS= read -r line; do
+                if [ -n "$line" ]; then
+                    log_message "INFO" "  $line"
+                fi
+            done
+        fi
     fi
 }
 
-# 主程序
+# 守护进程主循环
+daemon_loop() {
+    log_message "INFO" "网络监控守护进程启动"
+    
+    while true; do
+        # 检查并清空日志文件（每天0:00或文件大于10MB时）
+        check_and_clear_log
+        
+        # 检查是否在锁频等待期内
+        if is_in_lock_wait_period; then
+            log_message "DEBUG" "在锁频等待期内，跳过网络检测"
+            sleep 5
+            continue
+        fi
+        
+        # 检查网络连接
+        if ! check_network; then
+            # 网络断开
+            if [ -z "$DISCONNECT_TIME" ]; then
+                # 记录断网时间（Unix时间戳和可读格式，用|分隔）
+                local timestamp=$(date '+%s')
+                local readable_time=$(date '+%Y-%m-%d %H:%M:%S')
+                DISCONNECT_TIME="${timestamp}|${readable_time}"
+                log_message "INFO" "网络断开，开始记录断网时间: $readable_time"
+            else
+                # 检查是否需要进行智能锁频
+                if should_do_smart_lock; then
+                    # 断网超过90秒，进行智能锁频
+                    handle_network_disconnect
+                fi
+            fi
+        else
+            # 网络已连接
+            
+            # 检查是否在指定时间点
+            if check_specific_time; then
+                # 在指定时间点，检查是否需要切换到PCI 141
+                log_message "INFO" "到达指定时间点，检查PCI 141状态"
+                lock_cellular_141
+            fi
+
+            # 处理网络恢复
+            handle_network_recovery
+        fi
+        
+        # 等待5秒后继续下一次检测
+        sleep 5
+    done
+}
+
+# 启动守护进程
+start_daemon() {
+    # 检查是否已经在运行
+    if [ -f "$PID_FILE" ]; then
+        local old_pid=$(cat "$PID_FILE")
+        if kill -0 "$old_pid" 2>/dev/null; then
+            echo "网络监控守护进程已在运行 (PID: $old_pid)"
+            exit 1
+        else
+            # PID文件存在但进程不存在，删除旧的PID文件
+            rm -f "$PID_FILE"
+        fi
+    fi
+    
+    # 记录当前进程PID
+    echo $$ > "$PID_FILE"
+    
+    # 启动守护进程循环
+    daemon_loop
+}
+
+# 停止守护进程
+stop_daemon() {
+    if [ -f "$PID_FILE" ]; then
+        local pid=$(cat "$PID_FILE")
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid"
+            rm -f "$PID_FILE"
+            echo "网络监控守护进程已停止 (PID: $pid)"
+        else
+            echo "守护进程未运行"
+            rm -f "$PID_FILE"
+        fi
+    else
+        echo "守护进程未运行"
+    fi
+}
+
+# 检查守护进程状态
+status_daemon() {
+    if [ -f "$PID_FILE" ]; then
+        local pid=$(cat "$PID_FILE")
+        if kill -0 "$pid" 2>/dev/null; then
+            echo "网络监控守护进程正在运行 (PID: $pid)"
+        else
+            echo "守护进程未运行（PID文件存在但进程不存在）"
+            rm -f "$PID_FILE"
+        fi
+    else
+        echo "守护进程未运行"
+    fi
+}
+
+# 单次执行主程序（兼容旧版本）
 main() {    
+    # 检查是否在锁频等待期内
+    if is_in_lock_wait_period; then
+        log_message "INFO" "在锁频等待期内，跳过网络检测"
+        return
+    fi
+    
     # 检查网络连接
     if ! check_network; then
         # 网络断开
-        if [ ! -f "$DISCONNECT_TIME_FILE" ]; then
+        if [ -z "$DISCONNECT_TIME" ]; then
             # 记录断网时间（Unix时间戳和可读格式，用|分隔）
             local timestamp=$(date '+%s')
             local readable_time=$(date '+%Y-%m-%d %H:%M:%S')
-            echo "${timestamp}|${readable_time}" > $DISCONNECT_TIME_FILE
-            log_message "INFO" "网络断开，开始记录断网时间"
+            DISCONNECT_TIME="${timestamp}|${readable_time}"
+            log_message "INFO" "网络断开，开始记录断网时间: $readable_time"
         else
-            # 检查是否需要切换PCI5值
-            if should_switch_pci; then
-                # 断网时按顺序切换PCI5值
-                lock_cellular_sequence
+            # 检查是否需要进行智能锁频
+            if should_do_smart_lock; then
+                # 断网超过90秒，进行智能锁频
+                handle_network_disconnect
             fi
         fi
     else
         # 网络已连接
         
-        # 检查是否在指定时间范围内
-        if check_time_range; then
-            # 在指定时间范围内，切换到141（函数内部会自动判断是否需要切换）
+        # 检查是否在指定时间点
+        if check_specific_time; then
+            # 在指定时间点，检查是否需要切换到PCI 141
+            log_message "INFO" "到达指定时间点，检查PCI 141状态"
             lock_cellular_141
         fi
 
@@ -260,28 +517,64 @@ main() {
 
 # 命令行参数处理
 case "$1" in
+    "start")
+        echo "启动网络监控守护进程"
+        start_daemon
+        ;;
+    "stop")
+        echo "停止网络监控守护进程"
+        stop_daemon
+        ;;
+    "restart")
+        echo "重启网络监控守护进程"
+        stop_daemon
+        sleep 2
+        start_daemon
+        ;;
+    "status")
+        status_daemon
+        ;;
     "-c")
-        echo "执行主程序 (main)"
+        echo "执行单次检测 (main)"
         main
         ;;
-    "-l")
-        echo "执行顺序切换 (lock_cellular_sequence)"
-        lock_cellular_sequence
+    "-s")
+        echo "执行频点扫描测试"
+        scan_result=$(scan_frequencies)
+        if [ $? -eq 0 ]; then
+            echo "扫描成功，结果:"
+            echo "$scan_result"
+            echo ""
+            echo "解析结果:"
+            parse_scan_result "$scan_result"
+        else
+            echo "扫描失败"
+        fi
         ;;
     "-r")
         echo "执行锁定到141 (lock_cellular_141)"
         lock_cellular_141
         ;;
     "")
-        echo "默认执行主程序 (main)"
-        main
+        echo "默认启动守护进程模式"
+        start_daemon
         ;;
     *)
-        echo "用法: $0 [-c|-l|-r]"
-        echo "  -c: 执行主程序 (main)"
-        echo "  -l: 执行顺序切换 (lock_cellular_sequence)"
-        echo "  -r: 执行锁定到141 (lock_cellular_141)"
-        echo "  无参数: 默认执行主程序 (main)"
+        echo "用法: $0 [start|stop|restart|status|-c|-s|-r]"
+        echo "  start:    启动守护进程（默认）"
+        echo "  stop:     停止守护进程"
+        echo "  restart:  重启守护进程"
+        echo "  status:   查看守护进程状态"
+        echo "  -c:       执行单次网络检测"
+        echo "  -s:       执行频点扫描测试"
+        echo "  -r:       执行锁定到PCI 141"
+        echo ""
+        echo "守护进程功能:"
+        echo "  - 每5秒检测网络连接状态"
+        echo "  - 断网90秒后扫描频点并按PCI优先级锁频"
+        echo "  - 锁频后60秒内不检测网络，50秒后恢复检测"
+        echo "  - 在6:50,8:50,12:50,14:50,16:50,18:50,20:50检查PCI 141"
+        echo "  - 网络恢复时发送钉钉通知"
         exit 1
         ;;
 esac
