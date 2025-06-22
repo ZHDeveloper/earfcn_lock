@@ -392,6 +392,47 @@ check_and_clear_log() {
     fi
 }
 
+# 网络监控核心逻辑（通用函数）
+perform_network_monitoring() {
+    # 检查是否在锁频等待期内
+    if is_in_lock_wait_period; then
+        log_message "DEBUG" "在锁频等待期内，跳过网络检测"
+        return 1  # 返回1表示跳过检测
+    fi
+    
+    # 检查网络连接
+    if ! check_network; then
+        # 网络断开
+        if [ -z "$DISCONNECT_TIME" ]; then
+            # 记录断网时间（Unix时间戳和可读格式，用|分隔）
+            local timestamp=$(date '+%s')
+            local readable_time=$(date '+%Y-%m-%d %H:%M:%S')
+            DISCONNECT_TIME="${timestamp}|${readable_time}"
+            log_message "INFO" "网络断开，开始记录断网时间: $readable_time"
+        else
+            # 检查是否需要进行智能锁频
+            if should_do_smart_lock; then
+                # 断网超过90秒，进行智能锁频
+                handle_network_disconnect
+            fi
+        fi
+    else
+        # 网络已连接
+        
+        # 检查是否在指定时间点
+        if check_specific_time; then
+            # 在指定时间点，检查是否需要切换到PCI 141
+            log_message "INFO" "到达指定时间点，检查PCI 141状态"
+            lock_cellular_141
+        fi
+
+        # 处理网络恢复
+        handle_network_recovery
+    fi
+    
+    return 0  # 返回0表示正常执行
+}
+
 # 守护进程主循环
 daemon_loop() {
     log_message "INFO" "网络监控守护进程启动"
@@ -400,45 +441,14 @@ daemon_loop() {
         # 检查并清空日志文件（每天0:00或文件大于10MB时）
         check_and_clear_log
         
-        # 检查是否在锁频等待期内
-        if is_in_lock_wait_period; then
-            log_message "DEBUG" "在锁频等待期内，跳过网络检测"
+        # 执行网络监控核心逻辑
+        if perform_network_monitoring; then
+            # 正常执行，等待5秒后继续下一次检测
             sleep 5
-            continue
-        fi
-        
-        # 检查网络连接
-        if ! check_network; then
-            # 网络断开
-            if [ -z "$DISCONNECT_TIME" ]; then
-                # 记录断网时间（Unix时间戳和可读格式，用|分隔）
-                local timestamp=$(date '+%s')
-                local readable_time=$(date '+%Y-%m-%d %H:%M:%S')
-                DISCONNECT_TIME="${timestamp}|${readable_time}"
-                log_message "INFO" "网络断开，开始记录断网时间: $readable_time"
-            else
-                # 检查是否需要进行智能锁频
-                if should_do_smart_lock; then
-                    # 断网超过90秒，进行智能锁频
-                    handle_network_disconnect
-                fi
-            fi
         else
-            # 网络已连接
-            
-            # 检查是否在指定时间点
-            if check_specific_time; then
-                # 在指定时间点，检查是否需要切换到PCI 141
-                log_message "INFO" "到达指定时间点，检查PCI 141状态"
-                lock_cellular_141
-            fi
-
-            # 处理网络恢复
-            handle_network_recovery
+            # 跳过检测（如在锁频等待期），等待5秒后继续
+            sleep 5
         fi
-        
-        # 等待5秒后继续下一次检测
-        sleep 5
     done
 }
 
@@ -496,42 +506,9 @@ status_daemon() {
 }
 
 # 单次执行主程序（兼容旧版本）
-main() {    
-    # 检查是否在锁频等待期内
-    if is_in_lock_wait_period; then
-        log_message "INFO" "在锁频等待期内，跳过网络检测"
-        return
-    fi
-    
-    # 检查网络连接
-    if ! check_network; then
-        # 网络断开
-        if [ -z "$DISCONNECT_TIME" ]; then
-            # 记录断网时间（Unix时间戳和可读格式，用|分隔）
-            local timestamp=$(date '+%s')
-            local readable_time=$(date '+%Y-%m-%d %H:%M:%S')
-            DISCONNECT_TIME="${timestamp}|${readable_time}"
-            log_message "INFO" "网络断开，开始记录断网时间: $readable_time"
-        else
-            # 检查是否需要进行智能锁频
-            if should_do_smart_lock; then
-                # 断网超过90秒，进行智能锁频
-                handle_network_disconnect
-            fi
-        fi
-    else
-        # 网络已连接
-        
-        # 检查是否在指定时间点
-        if check_specific_time; then
-            # 在指定时间点，检查是否需要切换到PCI 141
-            log_message "INFO" "到达指定时间点，检查PCI 141状态"
-            lock_cellular_141
-        fi
-
-        # 处理网络恢复
-        handle_network_recovery
-    fi
+main() {
+    # 执行网络监控核心逻辑
+    perform_network_monitoring
 }
 
 # 命令行参数处理
