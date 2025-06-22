@@ -93,18 +93,21 @@ parse_scan_result() {
         pci=""; earfcn=""; rsrp=""
         for(i=1; i<=NF; i++) {
             if($i ~ /"PCI":/) {
-                gsub(/.*"PCI":[ ]*"/, "", $i)
-                gsub(/".*/, "", $i)
+                gsub(/.*"PCI":[ ]*"?/, "", $i)
+                gsub(/"?[,}].*/, "", $i)
+                gsub(/"/, "", $i)
                 pci=$i
             }
             if($i ~ /"EARFCN":/) {
-                gsub(/.*"EARFCN":[ ]*"/, "", $i)
-                gsub(/".*/, "", $i)
+                gsub(/.*"EARFCN":[ ]*"?/, "", $i)
+                gsub(/"?[,}].*/, "", $i)
+                gsub(/"/, "", $i)
                 earfcn=$i
             }
             if($i ~ /"RSRP":/) {
-                gsub(/.*"RSRP":[ ]*"/, "", $i)
-                gsub(/".*/, "", $i)
+                gsub(/.*"RSRP":[ ]*"?/, "", $i)
+                gsub(/"?[,}].*/, "", $i)
+                gsub(/"/, "", $i)
                 rsrp=$i
             }
         }
