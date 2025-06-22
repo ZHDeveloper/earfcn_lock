@@ -20,6 +20,12 @@ LOCK_TIME=""
 # 全局变量：上次日志清理日期
 LAST_LOG_CLEAR_DATE=""
 
+# 全局变量：上次日志检查时间（防止重复执行）
+LAST_CHECK_TIME=""
+
+# 全局变量：上次指定时间点检查时间（防止重复执行lock_cellular_141）
+LAST_SPECIFIC_TIME_CHECK=""
+
 # 日志记录函数
 # 参数1: 日志级别 (e.g., INFO, WARN, ERROR)
 # 参数2: 日志消息
@@ -193,7 +199,7 @@ handle_network_disconnect() {
     fi
 }
 
-# 检查是否在锁频等待期内（锁频后60秒内不检测网络，50秒后恢复检测）
+# 检查是否在锁频等待期内（锁频后50秒内不检测网络，50秒后恢复检测）
 is_in_lock_wait_period() {
     if [ -z "$LOCK_TIME" ]; then
         return 1 # 没有锁频记录，不在等待期
@@ -309,7 +315,13 @@ check_specific_time() {
     # 检查是否为指定的时间点
     case "$current_time" in
         "06:50"|"08:50"|"12:50"|"14:50"|"16:50"|"18:50"|"20:50")
-            return 0  # 是指定时间点
+            # 添加防重复执行机制
+            local current_time_key="$(date '+%Y-%m-%d-%H-%M')"
+            if [ "$LAST_SPECIFIC_TIME_CHECK" = "$current_time_key" ]; then
+                return 1  # 同一分钟内已执行过，跳过
+            fi
+            LAST_SPECIFIC_TIME_CHECK="$current_time_key"
+            return 0  # 是指定时间点且未重复执行
             ;;
         *)
             return 1  # 不是指定时间点
@@ -320,6 +332,13 @@ check_specific_time() {
 # 检查并清空日志文件的函数
 # 每天0:00清空日志文件，或者当日志文件大于10MB时清空
 check_and_clear_log() {
+    # 添加分钟级别的防重复机制
+    local current_time_key="$(date '+%Y-%m-%d-%H-%M')"
+    if [ "$LAST_CHECK_TIME" = "$current_time_key" ]; then
+        return 0  # 同一分钟内已检查过，跳过
+    fi
+    LAST_CHECK_TIME="$current_time_key"
+    
     local current_date=$(date '+%Y-%m-%d')
     local current_hour=$(date '+%H')
     local current_minute=$(date '+%M')
@@ -572,7 +591,7 @@ case "$1" in
         echo "守护进程功能:"
         echo "  - 每5秒检测网络连接状态"
         echo "  - 断网90秒后扫描频点并按PCI优先级锁频"
-        echo "  - 锁频后60秒内不检测网络，50秒后恢复检测"
+        echo "  - 锁频后50秒内不检测网络，50秒后恢复检测"
         echo "  - 在6:50,8:50,12:50,14:50,16:50,18:50,20:50检查PCI 141"
         echo "  - 网络恢复时发送钉钉通知"
         exit 1
