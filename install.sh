@@ -3,6 +3,7 @@
 # 安装脚本 - 将网络监控脚本安装到OpenWrt系统
 
 # 确保脚本有执行权限
+chmod +x uninstall.sh
 chmod +x network_monitor.sh
 chmod +x network_monitor_init
 
