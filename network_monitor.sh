@@ -83,14 +83,14 @@ scan_frequencies() {
     fi
 }
 
-# 从扫描结果中提取可用的PCI和EARFCN组合
+# 从扫描结果中提取可用的PCI、EARFCN和RSRP组合
 parse_scan_result() {
     local scan_data="$1"
-    # 使用awk解析JSON数据，提取PCI和EARFCN
+    # 使用awk解析JSON数据，提取PCI、EARFCN和RSRP
     echo "$scan_data" | awk '
     BEGIN { RS="}"; FS="," }
     /"PCI":/ {
-        pci=""; earfcn=""
+        pci=""; earfcn=""; rsrp=""
         for(i=1; i<=NF; i++) {
             if($i ~ /"PCI":/) {
                 gsub(/.*"PCI":[ ]*"/, "", $i)
@@ -102,9 +102,14 @@ parse_scan_result() {
                 gsub(/".*/, "", $i)
                 earfcn=$i
             }
+            if($i ~ /"RSRP":/) {
+                gsub(/.*"RSRP":[ ]*"/, "", $i)
+                gsub(/".*/, "", $i)
+                rsrp=$i
+            }
         }
-        if(pci != "" && earfcn != "") {
-            print earfcn "|" pci
+        if(pci != "" && earfcn != "" && rsrp != "") {
+            print earfcn "|" pci "|" rsrp
         }
     }'
 }
@@ -115,13 +120,13 @@ select_best_frequency() {
     local available_combinations=$(parse_scan_result "$scan_data")
     
     # PCI优先级列表
-    local priority_pcis="141 189 296 739 93"
+    local priority_pcis="141 189 296 93"
     
     log_message "INFO" "可用频点组合: $available_combinations"
     
     # 按优先级查找可用的PCI
     for priority_pci in $priority_pcis; do
-        local match=$(echo "$available_combinations" | grep "|$priority_pci$" | head -1)
+        local match=$(echo "$available_combinations" | grep "|$priority_pci|" | head -1)
         if [ -n "$match" ]; then
             local earfcn=$(echo "$match" | cut -d'|' -f1)
             local pci=$(echo "$match" | cut -d'|' -f2)
@@ -131,9 +136,28 @@ select_best_frequency() {
         fi
     done
     
-    log_message "WARN" "未找到优先级PCI，使用第一个可用组合"
-    echo "$available_combinations" | head -1
-    return 1
+    log_message "WARN" "未找到优先级PCI，根据RSRP最大值选择"
+    # 根据RSRP最大值选择（RSRP值越大越好，即越接近0）
+    local best_match=$(echo "$available_combinations" | awk -F'|' '{
+        rsrp = $3
+        gsub(/^-/, "", rsrp)  # 移除负号进行数值比较
+        if (NR == 1 || rsrp < min_rsrp) {
+            min_rsrp = rsrp
+            best_line = $0
+        }
+    } END { print best_line }')
+    
+    if [ -n "$best_match" ]; then
+        local earfcn=$(echo "$best_match" | cut -d'|' -f1)
+        local pci=$(echo "$best_match" | cut -d'|' -f2)
+        local rsrp=$(echo "$best_match" | cut -d'|' -f3)
+        log_message "INFO" "选择RSRP最佳频点组合: EARFCN=$earfcn, PCI=$pci, RSRP=$rsrp"
+        echo "$earfcn|$pci"
+        return 0
+    else
+        log_message "ERROR" "未找到任何可用的频点组合"
+        return 1
+    fi
 }
 
 # 锁定到指定频点
