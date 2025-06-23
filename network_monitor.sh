@@ -143,27 +143,45 @@ scan_frequencies() {
 # 从扫描结果中提取可用的PCI、EARFCN和RSRP组合
 parse_scan_result() {
     local scan_data="$1"
-    # 使用更简单的方法：直接用grep和sed提取每个cell的信息
-    # 先分割成单独的cell记录，然后逐个解析
-    echo "$scan_data" | sed 's/}, {/}\n{/g' | sed 's/\[{/{/g' | sed 's/}\]/}/g' | \
-    while IFS= read -r cell_data; do
-        if echo "$cell_data" | grep -q '"MODE":[ ]*"NR"'; then
-            # 先移除lockneed部分，避免干扰
-            clean_data=$(echo "$cell_data" | sed 's/"lockneed".*$//')
+    local temp_file="/tmp/scan_result_$$"
 
-            # 提取EARFCN (确保不是lockneed中的EARFCN)
-            earfcn=$(echo "$clean_data" | sed -n 's/.*"EARFCN":[ ]*"\([^"]*\)".*/\1/p' | head -1)
-            # 提取PCI (确保不是lockneed中的PCI)
-            pci=$(echo "$clean_data" | sed -n 's/.*"PCI":[ ]*"\([^"]*\)".*/\1/p' | head -1)
-            # 提取RSRP
-            rsrp=$(echo "$clean_data" | sed -n 's/.*"RSRP":[ ]*"\([^"]*\)".*/\1/p' | head -1)
+    # 将扫描数据写入临时文件，避免管道子shell问题
+    echo "$scan_data" > "$temp_file"
 
-            # 如果三个值都提取到了，输出结果
-            if [ -n "$earfcn" ] && [ -n "$pci" ] && [ -n "$rsrp" ]; then
+    # 使用jsonfilter解析JSON数据，提取NR模式的cell信息
+    # 获取scanlist数组的长度
+    local array_length=$(jsonfilter -i "$temp_file" -e '@.scanlist[#]' 2>/dev/null)
+
+    if [ -z "$array_length" ] || [ "$array_length" = "0" ]; then
+        log_message "WARN" "扫描结果为空或格式错误"
+        rm -f "$temp_file"
+        return 1
+    fi
+
+    # 遍历scanlist数组中的每个元素
+    local i=0
+    while [ $i -lt "$array_length" ]; do
+        # 提取当前索引的cell信息
+        local mode=$(jsonfilter -i "$temp_file" -e "@.scanlist[$i].MODE" 2>/dev/null)
+
+        # 只处理NR模式的cell
+        if [ "$mode" = "NR" ]; then
+            local earfcn=$(jsonfilter -i "$temp_file" -e "@.scanlist[$i].EARFCN" 2>/dev/null)
+            local pci=$(jsonfilter -i "$temp_file" -e "@.scanlist[$i].PCI" 2>/dev/null)
+            local rsrp=$(jsonfilter -i "$temp_file" -e "@.scanlist[$i].RSRP" 2>/dev/null)
+
+            # 验证提取的值是否有效
+            if [ -n "$earfcn" ] && [ -n "$pci" ] && [ -n "$rsrp" ] && \
+               [ "$earfcn" != "null" ] && [ "$pci" != "null" ] && [ "$rsrp" != "null" ]; then
                 echo "$earfcn|$pci|$rsrp"
             fi
         fi
+
+        i=$((i + 1))
     done
+
+    # 清理临时文件
+    rm -f "$temp_file"
 }
 
 # 按PCI优先级选择最佳频点组合
@@ -470,7 +488,7 @@ lock_cellular_141() {
     local scan_result=$(scan_frequencies)
     if [ $? -eq 0 ] && [ -n "$scan_result" ]; then
         # 查找PCI 141的频点组合
-        local pci_141_combination=$(parse_scan_result "$scan_result" | grep "|141$")
+        local pci_141_combination=$(parse_scan_result "$scan_result" | grep "|141|")
         if [ -n "$pci_141_combination" ]; then
             local earfcn=$(echo "$pci_141_combination" | cut -d'|' -f1)
             log_message "INFO" "找到PCI 141，EARFCN=$earfcn，开始切换"
