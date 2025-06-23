@@ -308,17 +308,165 @@ is_in_lock_wait_period() {
     fi
 }
 
+# 获取限速信息（参考get_speedlimit_info）
+get_speedlimit_info() {
+    local support_status=$(uci -q get cloudd.limit.support)
+    local has_enabled_rules=0
+    local enabled_rules=""
+
+    # 检查是否支持限速
+    if [ "$support_status" != "1" ]; then
+        echo "support=0"
+        return 1
+    fi
+
+    # 检查是否有启用的限速规则
+    uci -q foreach cloudd speedlimit '
+        local rule_name="$1"
+        local rule_enabled=$(uci -q get cloudd.$rule_name.enabled)
+        if [ "$rule_enabled" = "1" ]; then
+            has_enabled_rules=1
+            if [ -z "$enabled_rules" ]; then
+                enabled_rules="$rule_name"
+            else
+                enabled_rules="$enabled_rules,$rule_name"
+            fi
+        fi
+    '
+
+    if [ $has_enabled_rules -eq 1 ]; then
+        echo "support=1,enabled_rules=$enabled_rules"
+        return 0
+    else
+        echo "support=1,enabled_rules=none"
+        return 1
+    fi
+}
+
+# 禁用限速功能（智能检测+持久化保护）
+disable_speed_limit() {
+    log_message "INFO" "开始检查限速状态"
+
+    # 1. 先检查当前限速状态
+    local speedlimit_info=$(get_speedlimit_info)
+    local support_status=$(echo "$speedlimit_info" | cut -d',' -f1 | cut -d'=' -f2)
+    local enabled_rules=$(echo "$speedlimit_info" | cut -d',' -f2 | cut -d'=' -f2 2>/dev/null)
+
+    log_message "INFO" "当前限速状态: $speedlimit_info"
+
+    # 2. 判断是否需要禁用限速
+    if [ "$support_status" = "0" ] && [ "$enabled_rules" = "" -o "$enabled_rules" = "none" ]; then
+        log_message "INFO" "限速功能已经被禁用，无需重复操作"
+        echo "限速功能已经被禁用"
+        return 0
+    fi
+
+    if [ "$support_status" = "0" ] && [ -n "$enabled_rules" ] && [ "$enabled_rules" != "none" ]; then
+        log_message "WARN" "限速支持已禁用，但仍有启用的规则: $enabled_rules"
+    elif [ "$support_status" = "1" ] && [ -n "$enabled_rules" ] && [ "$enabled_rules" != "none" ]; then
+        log_message "WARN" "检测到启用的限速规则: $enabled_rules"
+    elif [ "$support_status" = "1" ] && [ "$enabled_rules" = "none" ]; then
+        log_message "INFO" "限速支持已启用，但无启用的规则"
+    fi
+
+    log_message "INFO" "开始禁用限速功能（持久化保护）"
+
+    # 3. 设置cloudd的limit支持为不支持
+    uci set cloudd.limit.support='0'
+    uci commit cloudd
+
+    if [ $? -eq 0 ]; then
+        log_message "INFO" "已禁用cloudd限速支持"
+    else
+        log_message "WARN" "禁用cloudd限速支持失败"
+    fi
+
+    # 4. 禁用所有限速规则
+    uci -q foreach cloudd speedlimit '
+        uci set cloudd.$1.enabled="0"
+    '
+    uci commit cloudd
+
+    if [ $? -eq 0 ]; then
+        log_message "INFO" "已禁用所有限速规则"
+    else
+        log_message "WARN" "禁用限速规则失败"
+    fi
+
+    # 5. 创建保护标记文件
+    touch /tmp/speedlimit_disabled_by_monitor
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - Speed limit disabled by network_monitor" > /tmp/speedlimit_disabled_by_monitor
+
+    # 6. 备份原始配置
+    cp /etc/config/cloudd /tmp/cloudd.backup.$(date +%s) 2>/dev/null || true
+
+    # 7. 重启相关服务使配置生效
+    /etc/init.d/cloudd restart 2>/dev/null || true
+
+    # 8. 验证配置是否生效
+    sleep 3
+    local final_support_status=$(uci -q get cloudd.limit.support)
+    if [ "$final_support_status" = "0" ]; then
+        log_message "INFO" "限速功能禁用成功，当前状态: support=$final_support_status"
+        echo "限速功能已成功禁用"
+    else
+        log_message "WARN" "限速功能可能未完全禁用，当前状态: support=$final_support_status"
+        echo "限速功能禁用可能失败，请检查日志"
+    fi
+
+    log_message "INFO" "限速功能禁用完成（已创建保护标记）"
+}
+
+# 检查并维护限速禁用状态
+check_and_maintain_speedlimit_disabled() {
+    # 检查是否存在保护标记文件
+    if [ ! -f "/tmp/speedlimit_disabled_by_monitor" ]; then
+        return 0  # 没有标记文件，不需要维护
+    fi
+
+    # 检查当前限速支持状态
+    local support_status=$(uci -q get cloudd.limit.support)
+    if [ "$support_status" != "0" ]; then
+        log_message "WARN" "检测到限速支持被重新启用，正在恢复禁用状态"
+
+        # 重新禁用限速支持
+        uci set cloudd.limit.support='0'
+        uci commit cloudd
+
+        # 重新禁用所有限速规则
+        uci -q foreach cloudd speedlimit '
+            uci set cloudd.$1.enabled="0"
+        '
+        uci commit cloudd
+
+        # 重启服务
+        /etc/init.d/cloudd restart 2>/dev/null || true
+
+        log_message "INFO" "已恢复限速禁用状态"
+    fi
+
+    # 检查具体的限速规则状态
+    local nocombo_enabled=$(uci -q get cloudd.limit_nocombo.enabled)
+    if [ "$nocombo_enabled" = "1" ]; then
+        log_message "WARN" "检测到无套餐限速被重新启用，正在禁用"
+        uci set cloudd.limit_nocombo.enabled='0'
+        uci commit cloudd
+        /etc/init.d/cloudd restart 2>/dev/null || true
+        log_message "INFO" "已重新禁用无套餐限速"
+    fi
+}
+
 # 直接切换到earfcn5=633984,pci5=141（用于特定时间点检查）
 lock_cellular_141() {
     local current_pci5=$(uci -q get cpecfg.cpesim1.pci5)
-    
+
     # 如果当前PCI已经是141，则无需处理
     if [ "$current_pci5" = "141" ]; then
         return 0
     fi
-    
+
     log_message "INFO" "当前PCI不是141，开始扫描频点查找PCI 141"
-    
+
     local scan_result=$(scan_frequencies)
     if [ $? -eq 0 ] && [ -n "$scan_result" ]; then
         # 查找PCI 141的频点组合
@@ -482,7 +630,10 @@ perform_network_monitoring() {
         log_message "DEBUG" "在锁频等待期内，跳过网络检测"
         return 1  # 返回1表示跳过检测
     fi
-    
+
+    # 检查并维护限速禁用状态（每次监控都检查）
+    check_and_maintain_speedlimit_disabled
+
     # 检查网络连接
     if ! check_network_status; then
         # 网络断开
@@ -663,12 +814,35 @@ case "$1" in
             exit 1
         fi
         ;;
+    "-d")
+        echo "禁用限速功能 (disable_speed_limit)"
+        disable_speed_limit
+        ;;
+    "-l")
+        echo "查看限速状态 (get_speedlimit_info)"
+        speedlimit_info=$(get_speedlimit_info)
+        support_status=$(echo "$speedlimit_info" | cut -d',' -f1 | cut -d'=' -f2)
+        enabled_rules=$(echo "$speedlimit_info" | cut -d',' -f2 | cut -d'=' -f2 2>/dev/null)
+
+        echo "限速支持状态: $support_status"
+        if [ "$support_status" = "1" ]; then
+            echo "启用的限速规则: $enabled_rules"
+            if [ "$enabled_rules" != "none" ] && [ -n "$enabled_rules" ]; then
+                echo "⚠️  警告: 检测到启用的限速规则，可能影响网络速度"
+                echo "建议执行: $0 -d 来禁用限速"
+            else
+                echo "✅ 当前无启用的限速规则"
+            fi
+        else
+            echo "✅ 限速功能已被禁用"
+        fi
+        ;;
     "")
         echo "默认启动守护进程模式"
         start_daemon
         ;;
     *)
-        echo "用法: $0 [start|stop|restart|status|-c|-s|-r|-g|-w|-n]"
+        echo "用法: $0 [start|stop|restart|status|-c|-s|-r|-g|-w|-n|-d|-l]"
         echo "  start:    启动守护进程（默认）"
         echo "  stop:     停止守护进程"
         echo "  restart:  重启守护进程"
@@ -679,6 +853,8 @@ case "$1" in
         echo "  -g:       获取CPE信号强度"
         echo "  -w:       获取WAN连接状态"
         echo "  -n:       执行网络连接检测"
+        echo "  -d:       禁用限速功能"
+        echo "  -l:       查看限速状态"
         echo ""
         echo "守护进程功能:"
         echo "  - 每1秒检测网络连接状态"
@@ -686,11 +862,14 @@ case "$1" in
         echo "  - 锁频后50秒内不检测网络，50秒后恢复检测"
         echo "  - 在6:50,8:50,14:50,16:50,18:50,20:50检查PCI 141"
         echo "  - 网络恢复时发送钉钉通知"
+        echo "  - 自动维护限速禁用状态（如果已禁用）"
         echo ""
         echo "测试命令:"
         echo "  -g:       显示当前CPE信号强度 (RSRP值)"
         echo "  -w:       显示当前WAN连接状态 (up/down)"
         echo "  -n:       测试网络连接是否正常"
+        echo "  -l:       查看当前限速状态和规则"
+        echo "  -d:       智能禁用限速功能，提升网络速度"
         exit 1
         ;;
 esac
