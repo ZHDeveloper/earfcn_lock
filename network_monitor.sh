@@ -53,20 +53,50 @@ send_dingtalk_message() {
 
 # 检测网络连接
 check_network() {
-    # 尝试ping多个目标以确保可靠性
-    local ping_result=1
-    
-    if ping -c 1 -W 1 8.8.8.8 > /dev/null 2>&1; then
-        ping_result=0
-    elif ping -c 1 -W 1 114.114.114.114 > /dev/null 2>&1; then
-        ping_result=0
-    elif ping -c 1 -W 1 www.baidu.com > /dev/null 2>&1; then
-        ping_result=0
-    else
-        log_message "WARN" "网络检测：所有ping目标均失败"
+    # 方法1: 快速检查路由表（几乎瞬时）
+    if ! ip route get 8.8.8.8 >/dev/null 2>&1; then
+        log_message "WARN" "网络检测：无法获取到外网路由"
+        return 1  # 网络异常
     fi
-    
-    return $ping_result
+
+    # 路由存在，使用并行检测（总时间控制在2秒内）
+    local temp_dir="/tmp/network_check_$$"
+    mkdir -p "$temp_dir"
+
+    # 并行启动多个检测任务（OpenWrt兼容版本）
+    ping -c 1 -W 1 8.8.8.8 >/dev/null 2>&1 && echo "ping1_ok" > "$temp_dir/ping1" &
+    ping -c 1 -W 1 114.114.114.114 >/dev/null 2>&1 && echo "ping2_ok" > "$temp_dir/ping2" &
+
+    # 使用busybox nc或telnet进行TCP检测
+    if which nc >/dev/null 2>&1; then
+        nc -z -w 1 8.8.8.8 53 >/dev/null 2>&1 && echo "tcp1_ok" > "$temp_dir/tcp1" &
+        nc -z -w 1 114.114.114.114 53 >/dev/null 2>&1 && echo "tcp2_ok" > "$temp_dir/tcp2" &
+    else
+        # 如果没有nc，使用telnet替代
+        (echo "" | telnet 8.8.8.8 53 2>/dev/null | grep -q "Connected" && echo "tcp1_ok" > "$temp_dir/tcp1") &
+        (echo "" | telnet 114.114.114.114 53 2>/dev/null | grep -q "Connected" && echo "tcp2_ok" > "$temp_dir/tcp2") &
+    fi
+
+    # 等待最多2秒，检查是否有任何方法成功
+    local count=0
+    while [ $count -lt 20 ]; do  # 20 * 0.1秒 = 2秒
+        if [ -f "$temp_dir/ping1" ] || [ -f "$temp_dir/ping2" ] || [ -f "$temp_dir/tcp1" ] || [ -f "$temp_dir/tcp2" ]; then
+            # 清理临时文件和后台进程
+            rm -rf "$temp_dir"
+            # OpenWrt兼容的进程清理
+            killall ping nc telnet 2>/dev/null || true
+            return 0  # 网络正常
+        fi
+        sleep 0.1
+        count=$((count + 1))
+    done
+
+    # 清理临时文件和后台进程
+    rm -rf "$temp_dir"
+    killall ping nc telnet 2>/dev/null || true
+
+    log_message "WARN" "网络检测：所有并行检测均失败"
+    return 1  # 网络异常
 }
 
 # 扫描附近频点
