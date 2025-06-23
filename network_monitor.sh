@@ -51,8 +51,8 @@ send_dingtalk_message() {
     }"
 }
 
-# 检测网络连接（基于CPE信号强度）
-check_network() {
+# 获取CPE信号强度（参考cpesel.sh的get_signal函数）
+get_signal() {
     local _iface="cpe"
     local rsrp=""
     local up=""
@@ -69,19 +69,58 @@ check_network() {
             rsrp=$(echo "$iface_info" | jsonfilter -e '@.status.rsrp' 2>/dev/null)
 
             # 检查接口状态：up=0且uptime>0表示连接正常
-            if [ "$up" = "0" ] && [ -n "$uptime" ] && [ "$uptime" -gt 0 ] && [ -n "$rsrp" ] && [ "$rsrp" != "null" ]; then
-                log_message "DEBUG" "CPE网络正常，RSRP: $rsrp, uptime: $uptime"
-                return 0  # 网络正常
-            else
-                log_message "WARN" "CPE状态异常，up: $up, uptime: $uptime, rsrp: $rsrp"
-                return 1  # 网络异常
+            if [ "$up" = "0" ] && [ -n "$uptime" ] && [ "$uptime" -gt 0 ]; then
+                echo "$rsrp"
+                return 0
             fi
-        else
-            log_message "WARN" "无法获取CPE接口信息"
-            return 1  # 网络异常
         fi
+    fi
+
+    # 如果获取失败，返回空值
+    echo ""
+    return 1
+}
+
+# 获取WAN连接状态（参考cpesel.sh的get_wanchk_state函数）
+get_wanchk_state() {
+    local _iface_name="cpe"
+    local _iface=""
+    local status=""
+
+    # 获取网络接口名称
+    _iface=$(uci -q get "network.$_iface_name.network_ifname")
+    [ -z "$_iface" ] && _iface="$_iface_name"
+
+    # 读取接口状态文件
+    status=$(cat "/var/run/wanchk/iface_state/$_iface" 2>/dev/null)
+
+    # 如果状态为down，尝试读取IPv6状态
+    if [ "$status" = "down" ]; then
+        status=$(cat "/var/run/wanchk/iface_state/${_iface}_6" 2>/dev/null)
+    fi
+
+    echo "$status"
+}
+
+# 检测网络连接（基于wanchk状态）
+check_network() {
+    local wan_status=$(get_wanchk_state)
+
+    if [ "$wan_status" = "up" ]; then
+        log_message "DEBUG" "网络状态正常: $wan_status"
+        return 0  # 网络正常
+    elif [ "$wan_status" = "down" ]; then
+        log_message "WARN" "网络状态异常: $wan_status"
+        return 1  # 网络异常
     else
-        log_message "WARN" "无法获取CPE状态信息"
+        # 如果无法获取状态或状态为空，记录详细信息
+        log_message "WARN" "无法获取网络状态或状态未知: '$wan_status'"
+
+        # 检查状态文件是否存在
+        if [ ! -d "/var/run/wanchk/iface_state" ]; then
+            log_message "WARN" "wanchk状态目录不存在: /var/run/wanchk/iface_state"
+        fi
+
         return 1  # 网络异常
     fi
 }
@@ -595,12 +634,41 @@ case "$1" in
         echo "执行锁定到141 (lock_cellular_141)"
         lock_cellular_141
         ;;
+    "-g")
+        echo "获取CPE信号强度 (get_signal)"
+        signal=$(get_signal)
+        if [ $? -eq 0 ] && [ -n "$signal" ]; then
+            echo "信号强度 (RSRP): $signal dBm"
+        else
+            echo "无法获取信号强度"
+            exit 1
+        fi
+        ;;
+    "-w")
+        echo "获取WAN连接状态 (get_wanchk_state)"
+        wan_status=$(get_wanchk_state)
+        if [ -n "$wan_status" ]; then
+            echo "WAN状态: $wan_status"
+        else
+            echo "无法获取WAN状态"
+            exit 1
+        fi
+        ;;
+    "-n")
+        echo "执行网络连接检测 (check_network)"
+        if check_network; then
+            echo "网络连接正常"
+        else
+            echo "网络连接异常"
+            exit 1
+        fi
+        ;;
     "")
         echo "默认启动守护进程模式"
         start_daemon
         ;;
     *)
-        echo "用法: $0 [start|stop|restart|status|-c|-s|-r]"
+        echo "用法: $0 [start|stop|restart|status|-c|-s|-r|-g|-w|-n]"
         echo "  start:    启动守护进程（默认）"
         echo "  stop:     停止守护进程"
         echo "  restart:  重启守护进程"
@@ -608,6 +676,9 @@ case "$1" in
         echo "  -c:       执行单次网络检测"
         echo "  -s:       执行频点扫描测试"
         echo "  -r:       执行锁定到PCI 141"
+        echo "  -g:       获取CPE信号强度"
+        echo "  -w:       获取WAN连接状态"
+        echo "  -n:       执行网络连接检测"
         echo ""
         echo "守护进程功能:"
         echo "  - 每1秒检测网络连接状态"
@@ -615,6 +686,11 @@ case "$1" in
         echo "  - 锁频后50秒内不检测网络，50秒后恢复检测"
         echo "  - 在6:50,8:50,14:50,16:50,18:50,20:50检查PCI 141"
         echo "  - 网络恢复时发送钉钉通知"
+        echo ""
+        echo "测试命令:"
+        echo "  -g:       显示当前CPE信号强度 (RSRP值)"
+        echo "  -w:       显示当前WAN连接状态 (up/down)"
+        echo "  -n:       测试网络连接是否正常"
         exit 1
         ;;
 esac
