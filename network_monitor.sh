@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # 网络监控脚本 - 开机启动守护进程版本
-# 功能：每2秒检测网络连接状态，断网20秒后扫描频点并按PCI优先级锁频
+# 功能：每1秒检测网络连接状态，断网立即扫描频点并按PCI优先级锁频
 #       在网络恢复时发送钉钉通知消息
 #       在指定时间点（6:50，8:50，14:50，16:50，18:50，20:50）检查是否需要切换到PCI 141
 
@@ -51,52 +51,39 @@ send_dingtalk_message() {
     }"
 }
 
-# 检测网络连接
+# 检测网络连接（基于CPE信号强度）
 check_network() {
-    # 方法1: 快速检查路由表（几乎瞬时）
-    if ! ip route get 8.8.8.8 >/dev/null 2>&1; then
-        log_message "WARN" "网络检测：无法获取到外网路由"
+    local _iface="cpe"
+    local rsrp=""
+    local up=""
+    local uptime=""
+
+    # 使用ubus获取CPE状态信息
+    local cpe_status=$(ubus call infocd cpestatus 2>/dev/null)
+    if [ $? -eq 0 ] && [ -n "$cpe_status" ]; then
+        # 提取指定接口的状态信息
+        local iface_info=$(echo "$cpe_status" | jsonfilter -e '@.*[@.status.name="'${_iface}'"]' 2>/dev/null)
+        if [ -n "$iface_info" ]; then
+            up=$(echo "$iface_info" | jsonfilter -e '@.up' 2>/dev/null)
+            uptime=$(echo "$iface_info" | jsonfilter -e '@.uptime' 2>/dev/null)
+            rsrp=$(echo "$iface_info" | jsonfilter -e '@.status.rsrp' 2>/dev/null)
+
+            # 检查接口状态：up=0且uptime>0表示连接正常
+            if [ "$up" = "0" ] && [ -n "$uptime" ] && [ "$uptime" -gt 0 ] && [ -n "$rsrp" ] && [ "$rsrp" != "null" ]; then
+                log_message "DEBUG" "CPE网络正常，RSRP: $rsrp, uptime: $uptime"
+                return 0  # 网络正常
+            else
+                log_message "WARN" "CPE状态异常，up: $up, uptime: $uptime, rsrp: $rsrp"
+                return 1  # 网络异常
+            fi
+        else
+            log_message "WARN" "无法获取CPE接口信息"
+            return 1  # 网络异常
+        fi
+    else
+        log_message "WARN" "无法获取CPE状态信息"
         return 1  # 网络异常
     fi
-
-    # 路由存在，使用并行检测（总时间控制在2秒内）
-    local temp_dir="/tmp/network_check_$$"
-    mkdir -p "$temp_dir"
-
-    # 并行启动多个检测任务（OpenWrt兼容版本）
-    ping -c 1 -W 1 8.8.8.8 >/dev/null 2>&1 && echo "ping1_ok" > "$temp_dir/ping1" &
-    ping -c 1 -W 1 114.114.114.114 >/dev/null 2>&1 && echo "ping2_ok" > "$temp_dir/ping2" &
-
-    # 使用busybox nc或telnet进行TCP检测
-    if which nc >/dev/null 2>&1; then
-        nc -z -w 1 8.8.8.8 53 >/dev/null 2>&1 && echo "tcp1_ok" > "$temp_dir/tcp1" &
-        nc -z -w 1 114.114.114.114 53 >/dev/null 2>&1 && echo "tcp2_ok" > "$temp_dir/tcp2" &
-    else
-        # 如果没有nc，使用telnet替代
-        (echo "" | telnet 8.8.8.8 53 2>/dev/null | grep -q "Connected" && echo "tcp1_ok" > "$temp_dir/tcp1") &
-        (echo "" | telnet 114.114.114.114 53 2>/dev/null | grep -q "Connected" && echo "tcp2_ok" > "$temp_dir/tcp2") &
-    fi
-
-    # 等待最多2秒，检查是否有任何方法成功
-    local count=0
-    while [ $count -lt 20 ]; do  # 20 * 0.1秒 = 2秒
-        if [ -f "$temp_dir/ping1" ] || [ -f "$temp_dir/ping2" ] || [ -f "$temp_dir/tcp1" ] || [ -f "$temp_dir/tcp2" ]; then
-            # 清理临时文件和后台进程
-            rm -rf "$temp_dir"
-            # OpenWrt兼容的进程清理
-            killall ping nc telnet 2>/dev/null || true
-            return 0  # 网络正常
-        fi
-        sleep 0.1
-        count=$((count + 1))
-    done
-
-    # 清理临时文件和后台进程
-    rm -rf "$temp_dir"
-    killall ping nc telnet 2>/dev/null || true
-
-    log_message "WARN" "网络检测：所有并行检测均失败"
-    return 1  # 网络异常
 }
 
 # 扫描附近频点
@@ -315,16 +302,8 @@ should_do_smart_lock() {
     if [ -z "$DISCONNECT_TIME" ]; then
         return 1 # 没有断网记录，不需要锁频
     else
-        # 计算断网持续时间（秒）
-        local disconnect_time=$(echo "$DISCONNECT_TIME" | cut -d'|' -f1)
-        local current_time=$(date '+%s')
-        local disconnect_duration=$((current_time - disconnect_time))
-        
-        if [ $disconnect_duration -ge 20 ]; then
-            return 0 # 断网时间超过20秒，需要智能锁频
-        else
-            return 1 # 断网时间不足20秒，不需要锁频
-        fi
+        # 断网立即进行智能锁频
+        return 0 # 有断网记录，立即进行智能锁频
     fi
 }
 
@@ -477,7 +456,7 @@ perform_network_monitoring() {
         else
             # 检查是否需要进行智能锁频
             if should_do_smart_lock; then
-                # 断网超过50秒，进行智能锁频
+                # 断网立即进行智能锁频
                 handle_network_disconnect
             fi
         fi
@@ -508,11 +487,11 @@ daemon_loop() {
         
         # 执行网络监控核心逻辑
         if perform_network_monitoring; then
-            # 正常执行，等待2秒后继续下一次检测
-            sleep 2
+            # 正常执行，等待1秒后继续下一次检测
+            sleep 1
         else
-            # 跳过检测（如在锁频等待期），等待2秒后继续
-            sleep 2
+            # 跳过检测（如在锁频等待期），等待1秒后继续
+            sleep 1
         fi
     done
 }
@@ -631,8 +610,8 @@ case "$1" in
         echo "  -r:       执行锁定到PCI 141"
         echo ""
         echo "守护进程功能:"
-        echo "  - 每2秒检测网络连接状态"
-        echo "  - 断网20秒后扫描频点并按PCI优先级锁频"
+        echo "  - 每1秒检测网络连接状态"
+        echo "  - 断网立即扫描频点并按PCI优先级锁频"
         echo "  - 锁频后50秒内不检测网络，50秒后恢复检测"
         echo "  - 在6:50,8:50,14:50,16:50,18:50,20:50检查PCI 141"
         echo "  - 网络恢复时发送钉钉通知"
