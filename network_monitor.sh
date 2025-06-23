@@ -217,8 +217,23 @@ lock_to_frequency() {
         cpetools.sh -u
         if [ $? -eq 0 ]; then
             log_message "INFO" "更新命令执行成功"
-            # 记录锁频时间，60秒内不检测网络
+            # 记录锁频时间，50秒内不检测网络
             LOCK_TIME="$(date '+%s')"
+
+            # 15秒后再次执行锁频（后台执行）
+            (
+                sleep 15
+                log_message "INFO" "15秒后再次执行锁频更新命令"
+
+                # 再次执行更新命令
+                cpetools.sh -u
+                if [ $? -eq 0 ]; then
+                    log_message "INFO" "15秒后锁频更新命令执行成功"
+                else
+                    log_message "WARN" "15秒后锁频更新命令执行失败"
+                fi
+            ) &
+
             return 0
         else
             log_message "WARN" "更新命令执行失败"
