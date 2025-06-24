@@ -1,8 +1,8 @@
 #!/bin/sh
 
-# 网络监控脚本 - 开机启动守护进程版本
-# 功能：每1秒检测网络连接状态，断网立即扫描频点并按PCI优先级锁频
-#       在网络恢复时发送钉钉通知消息
+# CPE状态监控脚本 - 开机启动守护进程版本
+# 功能：每1秒检测CPE连接状态，CPE状态异常立即扫描频点并按PCI优先级锁频
+#       在CPE状态恢复时发送钉钉通知消息
 #       在指定时间点（6:50，16:30，18:30，20:30）检查并切换到PCI 141
 # 兼容性：针对 OpenWrt busybox ash shell 优化
 
@@ -12,7 +12,7 @@ LOG_FILE="/tmp/network_monitor.log"
 # PID文件
 PID_FILE="/tmp/network_monitor.pid"
 
-# 全局变量：断网时间记录（Unix时间戳|可读格式）
+# 全局变量：CPE状态异常时间记录（Unix时间戳|可读格式）
 DISCONNECT_TIME=""
 
 # 全局变量：上次日志清理日期
@@ -109,8 +109,8 @@ get_signal() {
 
 # 获取CPE状态（合并原get_wanchk_state、check_cpe_status、is_cpe_locked功能）
 # 返回值：
-#   0 - 网络正常，继续监控
-#   1 - 网络异常，需要处理
+#   0 - CPE状态正常，继续监控
+#   1 - CPE状态异常，需要处理
 #   2 - 跳过检测（CPE锁定或其他阻塞状态）
 get_cpe_status() {
     local _iface_name="cpe"
@@ -125,7 +125,7 @@ get_cpe_status() {
     # 1. 首先检查锁定状态文件
     lock_status=$(cat "/var/run/wanchk/iface_state/${_iface_name}_lock" 2>/dev/null)
     if [ "$lock_status" = "lock" ]; then
-        log_message "DEBUG" "CPE处于锁定状态，跳过网络检测"
+        log_message "DEBUG" "CPE处于锁定状态，跳过CPE状态检测"
         return 2  # 跳过检测
     fi
 
@@ -140,30 +140,30 @@ get_cpe_status() {
     # 3. 根据状态判断处理方式
     case "$wan_status" in
         "up")
-            log_message "DEBUG" "网络状态正常: $wan_status"
-            return 0  # 网络正常
+            log_message "DEBUG" "CPE状态正常: $wan_status"
+            return 0  # CPE状态正常
             ;;
         "down")
-            log_message "WARN" "网络状态异常: $wan_status"
-            return 1  # 网络异常
+            log_message "WARN" "CPE状态异常: $wan_status"
+            return 1  # CPE状态异常
             ;;
         "block")
-            log_message "DEBUG" "CPE状态为block，跳过网络检测"
+            log_message "DEBUG" "CPE状态为block，跳过CPE状态检测"
             return 2  # 跳过检测
             ;;
         *)
             # 状态未知或为空时，进一步检查
             if [ "$lock_status" = "unlock" ]; then
-                log_message "DEBUG" "CPE解锁状态，但网络状态未知: '$wan_status'，视为异常"
-                return 1  # 网络异常
+                log_message "DEBUG" "CPE解锁状态，但CPE状态未知: '$wan_status'，视为异常"
+                return 1  # CPE状态异常
             else
                 # 检查是否有cpetools进程在运行
                 if check_cpetools_running; then
                     log_message "DEBUG" "检测到cpetools进程正在运行，可能正在锁频操作"
                     return 2  # 跳过检测
                 else
-                    log_message "WARN" "无法获取网络状态或状态未知: '$wan_status'"
-                    return 1  # 网络异常
+                    log_message "WARN" "无法获取CPE状态或状态未知: '$wan_status'"
+                    return 1  # CPE状态异常
                 fi
             fi
             ;;
@@ -450,44 +450,44 @@ lock_cellular_141() {
 
 
 
-# 处理网络恢复的函数
+# 处理CPE状态恢复的函数
 handle_network_recovery() {
-    # 如果存在断网记录则发送钉钉消息并清空记录变量
+    # 如果存在CPE状态异常记录则发送钉钉消息并清空记录变量
     if [ -n "$DISCONNECT_TIME" ]; then
         # 获取当前时间
         local current_time=$(date '+%Y-%m-%d %H:%M:%S')
-        
+
         # 从变量中分别提取时间戳和可读时间
         local disconnect_time=$(echo "$DISCONNECT_TIME" | cut -d'|' -f1)
         local disconnect_readable_time=$(echo "$DISCONNECT_TIME" | cut -d'|' -f2)
-        
-        # 计算断网持续时间（秒）
+
+        # 计算CPE状态异常持续时间（秒）
         local current_timestamp=$(date '+%s')
         local duration=$((current_timestamp - disconnect_time))
-        
+
         # 转换为可读格式（小时:分钟:秒）
         local hours=$((duration / 3600))
         local minutes=$(((duration % 3600) / 60))
         local seconds=$((duration % 60))
         local duration_readable="${hours}小时${minutes}分钟${seconds}秒"
-        
+
         # 获取当前PCI5值
         local current_pci5=$(uci -q get cpecfg.cpesim1.pci5)
-        
+
         # 构建消息内容
-        local message="网络状态通知:\n- 断网时间: ${disconnect_readable_time}\n- 恢复时间: ${current_time}\n- 断网持续: ${duration_readable}\n- 当前PCI5值: ${current_pci5}"
-        
+        local message="CPE状态通知:\n- CPE异常时间: ${disconnect_readable_time}\n- 恢复时间: ${current_time}\n- 异常持续: ${duration_readable}\n- 当前PCI5值: ${current_pci5}"
+
         # 发送钉钉消息
         log_message "INFO" "准备发送钉钉通知消息"
         send_dingtalk_message "$message"
         local dingtalk_result=$?
         if [ $dingtalk_result -eq 0 ]; then
-            log_message "INFO" "网络已恢复连接，钉钉通知发送成功"
+            log_message "INFO" "CPE状态已恢复正常，钉钉通知发送成功"
         else
-            log_message "WARN" "网络已恢复连接，钉钉通知发送失败，退出码: $dingtalk_result"
+            log_message "WARN" "CPE状态已恢复正常，钉钉通知发送失败，退出码: $dingtalk_result"
         fi
-        
-        # 清空断网时间记录变量
+
+        # 清空CPE状态异常时间记录变量
         DISCONNECT_TIME=""
     fi
 }
@@ -579,15 +579,15 @@ check_and_clear_log() {
     fi
 }
 
-# 网络监控核心逻辑（通用函数）
+# CPE状态监控核心逻辑（通用函数）
 perform_network_monitoring() {
-    # 获取CPE状态（合并了锁定检查和网络状态检查）
+    # 获取CPE状态（合并了锁定检查和CPE状态检查）
     get_cpe_status
     local status_result=$?
 
     case $status_result in
         0)
-            # 网络正常
+            # CPE状态正常
             # 检查是否在指定时间点
             if check_specific_time; then
                 # 在指定时间点，检查是否需要切换到PCI 141
@@ -595,19 +595,19 @@ perform_network_monitoring() {
                 lock_cellular_141
             fi
 
-            # 处理网络恢复
+            # 处理CPE状态恢复
             handle_network_recovery
             ;;
         1)
-            # 网络异常
+            # CPE状态异常
             if [ -z "$DISCONNECT_TIME" ]; then
-                # 记录断网时间（Unix时间戳和可读格式，用|分隔）
+                # 记录CPE状态异常时间（Unix时间戳和可读格式，用|分隔）
                 local timestamp=$(date '+%s')
                 local readable_time=$(date '+%Y-%m-%d %H:%M:%S')
                 DISCONNECT_TIME="${timestamp}|${readable_time}"
-                log_message "INFO" "网络断开，开始记录断网时间: $readable_time"
+                log_message "INFO" "CPE状态异常，开始记录异常时间: $readable_time"
             else
-                # 断网立即进行智能锁频
+                # CPE状态异常立即进行智能锁频
                 handle_frequency_lock
             fi
             ;;
@@ -622,13 +622,13 @@ perform_network_monitoring() {
 
 # 守护进程主循环
 daemon_loop() {
-    log_message "INFO" "网络监控守护进程启动"
-    
+    log_message "INFO" "CPE状态监控守护进程启动"
+
     while true; do
         # 检查并清空日志文件（每天0:00或文件大于10MB时）
         check_and_clear_log
-        
-        # 执行网络监控核心逻辑
+
+        # 执行CPE状态监控核心逻辑
         if perform_network_monitoring; then
             # 正常执行，等待1秒后继续下一次检测
             sleep 1
@@ -645,17 +645,17 @@ start_daemon() {
     if [ -f "$PID_FILE" ]; then
         local old_pid=$(cat "$PID_FILE")
         if kill -0 "$old_pid" 2>/dev/null; then
-            echo "网络监控守护进程已在运行 (PID: $old_pid)"
+            echo "CPE状态监控守护进程已在运行 (PID: $old_pid)"
             exit 1
         else
             # PID文件存在但进程不存在，删除旧的PID文件
             rm -f "$PID_FILE"
         fi
     fi
-    
+
     # 记录当前进程PID
     echo $$ > "$PID_FILE"
-    
+
     # 启动守护进程循环
     daemon_loop
 }
@@ -667,7 +667,7 @@ stop_daemon() {
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid"
             rm -f "$PID_FILE"
-            echo "网络监控守护进程已停止 (PID: $pid)"
+            echo "CPE状态监控守护进程已停止 (PID: $pid)"
         else
             echo "守护进程未运行"
             rm -f "$PID_FILE"
@@ -682,7 +682,7 @@ status_daemon() {
     if [ -f "$PID_FILE" ]; then
         local pid=$(cat "$PID_FILE")
         if kill -0 "$pid" 2>/dev/null; then
-            echo "网络监控守护进程正在运行 (PID: $pid)"
+            echo "CPE状态监控守护进程正在运行 (PID: $pid)"
         else
             echo "守护进程未运行（PID文件存在但进程不存在）"
             rm -f "$PID_FILE"
@@ -694,22 +694,22 @@ status_daemon() {
 
 # 单次执行主程序（兼容旧版本）
 main() {
-    # 执行网络监控核心逻辑
+    # 执行CPE状态监控核心逻辑
     perform_network_monitoring
 }
 
 # 命令行参数处理
 case "$1" in
     "start")
-        echo "启动网络监控守护进程"
+        echo "启动CPE状态监控守护进程"
         start_daemon
         ;;
     "stop")
-        echo "停止网络监控守护进程"
+        echo "停止CPE状态监控守护进程"
         stop_daemon
         ;;
     "restart")
-        echo "重启网络监控守护进程"
+        echo "重启CPE状态监控守护进程"
         stop_daemon
         sleep 2
         start_daemon
@@ -749,12 +749,12 @@ case "$1" in
         fi
         ;;
     "-n")
-        echo "执行网络连接检测 (get_cpe_status)"
+        echo "执行CPE状态检测 (get_cpe_status)"
         get_cpe_status
         status_result=$?
         case $status_result in
-            0) echo "网络连接正常" ;;
-            1) echo "网络连接异常"; exit 1 ;;
+            0) echo "CPE状态正常" ;;
+            1) echo "CPE状态异常"; exit 1 ;;
             2) echo "跳过检测 - CPE锁定或阻塞状态"; exit 2 ;;
         esac
         ;;
@@ -769,7 +769,7 @@ case "$1" in
         if [ "$support_status" = "1" ]; then
             echo "启用的限速规则: $enabled_rules"
             if [ "$enabled_rules" != "none" ] && [ -n "$enabled_rules" ]; then
-                echo "⚠️  警告: 检测到启用的限速规则，可能影响网络速度"
+                echo "⚠️  警告: 检测到启用的限速规则，可能影响CPE连接速度"
             else
                 echo "✅ 当前无启用的限速规则"
             fi
@@ -787,24 +787,24 @@ case "$1" in
         echo "  stop:     停止守护进程"
         echo "  restart:  重启守护进程"
         echo "  status:   查看守护进程状态"
-        echo "  -c:       执行单次网络检测"
+        echo "  -c:       执行单次CPE状态检测"
         echo "  -s:       执行频点扫描测试"
         echo "  -r:       执行锁定到PCI 141"
         echo "  -g:       获取CPE信号强度"
-        echo "  -n:       执行网络连接检测"
+        echo "  -n:       执行CPE状态检测"
         echo "  -l:       查看限速状态"
         echo ""
         echo "测试命令:"
         echo "  -g:       显示当前CPE信号强度 (RSRP值)"
-        echo "  -n:       测试网络连接是否正常"
+        echo "  -n:       测试CPE状态是否正常"
         echo "  -l:       查看当前限速状态和规则"
         echo ""
         echo "守护进程功能:"
-        echo "  - 每1秒检测网络连接状态"
-        echo "  - 断网立即扫描频点并按PCI优先级锁频"
-        echo "  - CPE锁定状态时跳过网络检测，解锁后恢复检测"
+        echo "  - 每1秒检测CPE连接状态"
+        echo "  - CPE状态异常立即扫描频点并按PCI优先级锁频"
+        echo "  - CPE锁定状态时跳过CPE状态检测，解锁后恢复检测"
         echo "  - 在6:50,16:30,18:30,20:30检查PCI 141"
-        echo "  - 网络恢复时发送钉钉通知"
+        echo "  - CPE状态恢复时发送钉钉通知"
         echo ""
         exit 1
         ;;
