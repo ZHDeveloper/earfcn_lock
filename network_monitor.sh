@@ -144,12 +144,6 @@ check_cpe_status() {
     else
         # 如果无法获取状态或状态为空，记录详细信息
         log_message "WARN" "无法获取网络状态或状态未知: '$wan_status'"
-
-        # 检查状态文件是否存在
-        if [ ! -d "/var/run/wanchk/iface_state" ]; then
-            log_message "WARN" "wanchk状态目录不存在: /var/run/wanchk/iface_state"
-        fi
-
         return 1  # 网络异常
     fi
 }
@@ -213,26 +207,6 @@ parse_scan_result() {
     rm -f "$temp_file"
 }
 
-# 比较两个RSRP值，返回较好的那个（更接近0的负数）
-# 参数1: RSRP值1, 参数2: RSRP值2
-# 返回值: 0表示第一个更好，1表示第二个更好
-compare_rsrp() {
-    local rsrp1="$1"
-    local rsrp2="$2"
-
-    # 验证输入是否为有效数值
-    if ! echo "$rsrp1" | grep -qE '^-?[0-9]+(\.[0-9]+)?$'; then
-        return 1  # rsrp1无效，rsrp2更好
-    fi
-    if ! echo "$rsrp2" | grep -qE '^-?[0-9]+(\.[0-9]+)?$'; then
-        return 0  # rsrp2无效，rsrp1更好
-    fi
-
-    # 使用awk进行浮点数比较
-    # RSRP值越大（越接近0）越好，所以rsrp1 > rsrp2时返回0（第一个更好）
-    local result=$(awk "BEGIN { print ($rsrp1 > $rsrp2) ? 0 : 1 }")
-    return $result
-}
 
 # 按PCI优先级选择最佳频点组合
 select_best_frequency() {
@@ -276,8 +250,8 @@ select_best_frequency() {
         if (earfcn != "" && pci != "" && rsrp != "") {
             combination_count++
 
-            # 验证RSRP是否为有效数值（包括负数和小数）
-            if (rsrp ~ /^-?[0-9]+(\.[0-9]+)?$/) {
+            # 验证RSRP是否为有效整数
+            if (rsrp ~ /^-?[0-9]+$/) {
                 if (best_rsrp == "" || rsrp > best_rsrp) {
                     best_rsrp = rsrp
                     best_line = $0
@@ -362,10 +336,10 @@ lock_to_frequency() {
     fi
 }
 
-# 断网时的智能锁频处理
-handle_network_disconnect() {
-    log_message "INFO" "开始处理断网情况，扫描并锁定最佳频点"
-    
+# 智能锁频处理
+handle_frequency_lock() {
+    log_message "INFO" "开始处理智能锁频，扫描并锁定最佳频点"
+
     local scan_result=$(scan_frequencies)
     if [ $? -eq 0 ] && [ -n "$scan_result" ]; then
         local best_combination=$(select_best_frequency "$scan_result")
@@ -476,16 +450,7 @@ lock_cellular_141() {
     fi
 }
 
-# 检查是否需要进行智能锁频
-# 返回值: 0 表示需要锁频, 1 表示不需要锁频
-should_do_smart_lock() {
-    if [ -z "$DISCONNECT_TIME" ]; then
-        return 1 # 没有断网记录，不需要锁频
-    else
-        # 断网立即进行智能锁频
-        return 0 # 有断网记录，立即进行智能锁频
-    fi
-}
+
 
 # 处理网络恢复的函数
 handle_network_recovery() {
@@ -633,11 +598,8 @@ perform_network_monitoring() {
             DISCONNECT_TIME="${timestamp}|${readable_time}"
             log_message "INFO" "网络断开，开始记录断网时间: $readable_time"
         else
-            # 检查是否需要进行智能锁频
-            if should_do_smart_lock; then
-                # 断网立即进行智能锁频
-                handle_network_disconnect
-            fi
+            # 断网立即进行智能锁频
+            handle_frequency_lock
         fi
     else
         # 网络已连接
