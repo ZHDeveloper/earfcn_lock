@@ -21,6 +21,9 @@ LAST_CHECK_TIME=""
 # 全局变量：上次扫描时间（防止频繁扫描）
 LAST_SCAN_TIME=""
 
+# 全局变量：上次6:50扫描时间（防止重复执行）
+LAST_650_SCAN=""
+
 # 全局变量：锁频开始时间记录（Unix时间戳|可读格式）
 FREQUENCY_LOCK_TIME=""
 
@@ -186,19 +189,7 @@ scan_frequencies() {
         fi
     fi
 
-    # 检查CPE状态和网络空闲状态
-    if ! is_cpe_up; then
-        log_message "WARN" "CPE状态非up，跳过频点扫描"
-        return 1
-    fi
-
-    if ! is_network_idle; then
-        log_message "INFO" "网络繁忙，跳过频点扫描"
-        return 1
-    fi
-
     # 执行新的扫描
-    log_message "INFO" "网络空闲且CPE状态up，开始扫描频点"
     cpetools.sh -i cpe -c scan > "$cache_file"
     if [ $? -eq 0 ] && [ -s "$cache_file" ]; then
         local scan_result=$(cat "$cache_file")
@@ -491,6 +482,11 @@ should_scan_for_pci141() {
     local current_hour=$(date '+%H')
     local current_minute=$(date '+%M')
     if [ "$current_hour" = "06" ] && [ "$current_minute" = "50" ]; then
+        # 6:50时间点，检查是否已经扫描过
+        local current_time_key="$(date '+%Y-%m-%d-06-50')"
+        if [ "$LAST_650_SCAN" = "$current_time_key" ]; then
+            return 1  # 同一天的6:50已执行过，跳过
+        fi
         # 6:50时间点，强制扫描
         return 0
     fi
@@ -517,6 +513,13 @@ should_scan_for_pci141() {
 scan_and_lock_pci141() {
     # 记录扫描时间
     LAST_SCAN_TIME=$(date '+%s')
+
+    # 如果是6:50时间点，记录6:50扫描时间
+    local current_hour=$(date '+%H')
+    local current_minute=$(date '+%M')
+    if [ "$current_hour" = "06" ] && [ "$current_minute" = "50" ]; then
+        LAST_650_SCAN="$(date '+%Y-%m-%d-06-50')"
+    fi
 
     # 执行扫描
     local scan_result=$(scan_frequencies)
