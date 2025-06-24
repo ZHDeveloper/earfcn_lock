@@ -55,6 +55,13 @@ get_file_size() {
 log_message() {
     local level="$1"
     local message="$2"
+
+    # 如果日志文件不存在，创建并写入创建时间戳标记
+    if [ ! -f "$LOG_FILE" ]; then
+        local create_timestamp=$(date '+%s')
+        echo "# LOG_CREATE_TIME=$create_timestamp" > "$LOG_FILE"
+    fi
+
     echo "$(date '+%Y-%m-%d %H:%M:%S') [$level] $message" >> "$LOG_FILE"
 }
 
@@ -534,21 +541,34 @@ check_and_clear_log() {
         should_clear=true
         clear_reason="文件大小超过8MB"
     else
-        # 检查日志文件是否超过36小时（针对OpenWrt优化）
+        # 检查日志文件是否超过36小时（使用文件中记录的创建时间戳）
         local current_timestamp=$(date '+%s')
-        local file_timestamp=$(stat -c %Y "$LOG_FILE" 2>/dev/null || echo "0")
-        local time_diff=$((current_timestamp - file_timestamp))
-        # 36小时 = 129600秒
-        if [ "$time_diff" -gt 129600 ]; then
-            should_clear=true
-            clear_reason="日志文件超过36小时缓存期"
+        local create_timestamp=""
+
+        # 从日志文件第一行读取创建时间戳
+        if [ -f "$LOG_FILE" ]; then
+            local first_line=$(head -1 "$LOG_FILE" 2>/dev/null)
+            if echo "$first_line" | grep -q "^# LOG_CREATE_TIME="; then
+                create_timestamp=$(echo "$first_line" | sed 's/^# LOG_CREATE_TIME=//')
+            fi
+        fi
+
+        # 如果找到创建时间戳，检查是否超过36小时
+        if [ -n "$create_timestamp" ] && [ "$create_timestamp" -gt 0 ]; then
+            local time_diff=$((current_timestamp - create_timestamp))
+            # 36小时 = 129600秒
+            if [ "$time_diff" -gt 129600 ]; then
+                should_clear=true
+                clear_reason="日志文件超过36小时缓存期"
+            fi
         fi
     fi
 
     # 执行清空操作
     if [ "$should_clear" = true ]; then
-        # 清空日志文件
-        > "$LOG_FILE"
+        # 清空日志文件并重新写入创建时间戳
+        local new_create_timestamp=$(date '+%s')
+        echo "# LOG_CREATE_TIME=$new_create_timestamp" > "$LOG_FILE"
 
         # 记录清理操作
         log_message "INFO" "日志文件已清空 - 原因: $clear_reason"
