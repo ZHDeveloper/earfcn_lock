@@ -14,8 +14,6 @@ PID_FILE="/tmp/network_monitor.pid"
 # 全局变量：断网时间记录（Unix时间戳|可读格式）
 DISCONNECT_TIME=""
 
-
-
 # 全局变量：上次日志清理日期
 LAST_LOG_CLEAR_DATE=""
 
@@ -377,79 +375,7 @@ get_speedlimit_info() {
     fi
 }
 
-# 禁用限速功能（智能检测+持久化保护）
-disable_speed_limit() {
-    log_message "INFO" "开始检查限速状态"
 
-    # 1. 先检查当前限速状态
-    local speedlimit_info=$(get_speedlimit_info)
-    local support_status=$(echo "$speedlimit_info" | cut -d',' -f1 | cut -d'=' -f2)
-    local enabled_rules=$(echo "$speedlimit_info" | cut -d',' -f2 | cut -d'=' -f2 2>/dev/null)
-
-    log_message "INFO" "当前限速状态: $speedlimit_info"
-
-    # 2. 判断是否需要禁用限速
-    if [ "$support_status" = "0" ] && [ "$enabled_rules" = "" -o "$enabled_rules" = "none" ]; then
-        log_message "INFO" "限速功能已经被禁用，无需重复操作"
-        echo "限速功能已经被禁用"
-        return 0
-    fi
-
-    if [ "$support_status" = "0" ] && [ -n "$enabled_rules" ] && [ "$enabled_rules" != "none" ]; then
-        log_message "WARN" "限速支持已禁用，但仍有启用的规则: $enabled_rules"
-    elif [ "$support_status" = "1" ] && [ -n "$enabled_rules" ] && [ "$enabled_rules" != "none" ]; then
-        log_message "WARN" "检测到启用的限速规则: $enabled_rules"
-    elif [ "$support_status" = "1" ] && [ "$enabled_rules" = "none" ]; then
-        log_message "INFO" "限速支持已启用，但无启用的规则"
-    fi
-
-    log_message "INFO" "开始禁用限速功能（持久化保护）"
-
-    # 3. 设置cloudd的limit支持为不支持
-    uci set cloudd.limit.support='0'
-    uci commit cloudd
-
-    if [ $? -eq 0 ]; then
-        log_message "INFO" "已禁用cloudd限速支持"
-    else
-        log_message "WARN" "禁用cloudd限速支持失败"
-    fi
-
-    # 4. 禁用所有限速规则
-    uci -q foreach cloudd speedlimit '
-        uci set cloudd.$1.enabled="0"
-    '
-    uci commit cloudd
-
-    if [ $? -eq 0 ]; then
-        log_message "INFO" "已禁用所有限速规则"
-    else
-        log_message "WARN" "禁用限速规则失败"
-    fi
-
-    # 5. 创建保护标记文件
-    touch /tmp/speedlimit_disabled_by_monitor
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - Speed limit disabled by network_monitor" > /tmp/speedlimit_disabled_by_monitor
-
-    # 6. 备份原始配置
-    cp /etc/config/cloudd /tmp/cloudd.backup.$(date +%s) 2>/dev/null || true
-
-    # 7. 重启相关服务使配置生效
-    /etc/init.d/cloudd restart 2>/dev/null || true
-
-    # 8. 验证配置是否生效
-    sleep 3
-    local final_support_status=$(uci -q get cloudd.limit.support)
-    if [ "$final_support_status" = "0" ]; then
-        log_message "INFO" "限速功能禁用成功，当前状态: support=$final_support_status"
-        echo "限速功能已成功禁用"
-    else
-        log_message "WARN" "限速功能可能未完全禁用，当前状态: support=$final_support_status"
-        echo "限速功能禁用可能失败，请检查日志"
-    fi
-
-    log_message "INFO" "限速功能禁用完成（已创建保护标记）"
-}
 
 
 
@@ -807,10 +733,7 @@ case "$1" in
             exit 1
         fi
         ;;
-    "-d")
-        echo "禁用限速功能 (disable_speed_limit)"
-        disable_speed_limit
-        ;;
+
     "-l")
         echo "查看限速状态 (get_speedlimit_info)"
         speedlimit_info=$(get_speedlimit_info)
@@ -822,7 +745,6 @@ case "$1" in
             echo "启用的限速规则: $enabled_rules"
             if [ "$enabled_rules" != "none" ] && [ -n "$enabled_rules" ]; then
                 echo "⚠️  警告: 检测到启用的限速规则，可能影响网络速度"
-                echo "建议执行: $0 -d 来禁用限速"
             else
                 echo "✅ 当前无启用的限速规则"
             fi
@@ -857,7 +779,7 @@ case "$1" in
         start_daemon
         ;;
     *)
-        echo "用法: $0 [start|stop|restart|status|-c|-s|-r|-g|-w|-n|-d|-l|-k]"
+        echo "用法: $0 [start|stop|restart|status|-c|-s|-r|-g|-w|-n|-l|-k]"
         echo "  start:    启动守护进程（默认）"
         echo "  stop:     停止守护进程"
         echo "  restart:  重启守护进程"
@@ -868,7 +790,6 @@ case "$1" in
         echo "  -g:       获取CPE信号强度"
         echo "  -w:       获取WAN连接状态"
         echo "  -n:       执行网络连接检测"
-        echo "  -d:       禁用限速功能"
         echo "  -l:       查看限速状态"
         echo "  -k:       检查CPE锁定状态"
         echo ""
@@ -884,7 +805,6 @@ case "$1" in
         echo "  -w:       显示当前WAN连接状态 (up/down)"
         echo "  -n:       测试网络连接是否正常"
         echo "  -l:       查看当前限速状态和规则"
-        echo "  -d:       智能禁用限速功能，提升网络速度"
         echo "  -k:       检查CPE锁定状态，显示详细锁定信息"
         exit 1
         ;;
