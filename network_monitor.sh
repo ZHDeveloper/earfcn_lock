@@ -172,11 +172,35 @@ get_cpe_status() {
 
 # 扫描附近频点
 scan_frequencies() {
+    local cache_file="/var/cpescan_cache_last_cpe"
+    local current_time=$(date '+%s')
+    local cache_valid_duration=600  # 10分钟 = 600秒
+
+    # 检查缓存文件是否存在且有内容
+    if [ -s "$cache_file" ]; then
+        # 获取缓存文件的修改时间
+        local cache_time=$(stat -c %Y "$cache_file" 2>/dev/null)
+        if [ -n "$cache_time" ]; then
+            local time_diff=$((current_time - cache_time))
+
+            # 如果缓存文件在10分钟内，直接返回缓存内容
+            if [ $time_diff -lt $cache_valid_duration ]; then
+                log_message "INFO" "使用缓存的扫描结果（${time_diff}秒前扫描）"
+                local scan_result=$(cat "$cache_file")
+                echo "$scan_result"
+                return 0
+            else
+                log_message "INFO" "缓存已过期（${time_diff}秒前扫描），重新扫描"
+            fi
+        fi
+    fi
+
+    # 执行新的扫描
     log_message "INFO" "开始扫描附近频点"
-    cpetools.sh -i cpe -c scan > /var/cpescan_cache_last_cpe
-    if [ $? -eq 0 ] && [ -s "/var/cpescan_cache_last_cpe" ]; then
-        log_message "INFO" "频点扫描成功，结果已保存到 /var/cpescan_cache_last_cpe"
-        local scan_result=$(cat /var/cpescan_cache_last_cpe)
+    cpetools.sh -i cpe -c scan > "$cache_file"
+    if [ $? -eq 0 ] && [ -s "$cache_file" ]; then
+        log_message "INFO" "频点扫描成功，结果已保存到 $cache_file"
+        local scan_result=$(cat "$cache_file")
         echo "$scan_result"
         return 0
     else
@@ -332,21 +356,6 @@ lock_to_frequency() {
         cpetools.sh -u
         if [ $? -eq 0 ]; then
             log_message "INFO" "更新命令执行成功"
-
-            # 15秒后再次执行锁频（后台执行）
-            (
-                sleep 15
-                log_message "INFO" "15秒后再次执行锁频更新命令"
-
-                # 再次执行更新命令
-                cpetools.sh -u
-                if [ $? -eq 0 ]; then
-                    log_message "INFO" "15秒后锁频更新命令执行成功"
-                else
-                    log_message "WARN" "15秒后锁频更新命令执行失败"
-                fi
-            ) &
-
             return 0
         else
             log_message "WARN" "更新命令执行失败"
