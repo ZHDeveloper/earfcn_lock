@@ -669,12 +669,6 @@ status_daemon() {
     fi
 }
 
-# 单次执行主程序（兼容旧版本）
-main() {
-    # 执行CPE状态监控核心逻辑
-    perform_network_monitoring
-}
-
 # 命令行参数处理
 case "$1" in
     "start")
@@ -695,8 +689,8 @@ case "$1" in
         status_daemon
         ;;
     "-c")
-        echo "执行单次检测 (main)"
-        main
+        echo "执行单次检测 (perform_network_monitoring)"
+        perform_network_monitoring
         ;;
     "-s")
         echo "执行频点扫描测试"
