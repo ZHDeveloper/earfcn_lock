@@ -95,24 +95,16 @@ get_signal() {
     return 1
 }
 
-# 获取CPE状态（合并原get_wanchk_state、check_cpe_status、is_cpe_locked功能）
+# 获取CPE状态
 # 返回值：
 #   0 - CPE状态正常，继续监控
 #   1 - CPE状态异常，需要处理
+#   2 - 跳过检测（非up状态但有信号）
 get_cpe_status() {
     local _iface="cpe"
     local wan_status=""
-    local lock_status=""
 
-    # 1. 首先检查锁定状态文件
-    lock_status=$(cat "/var/run/wanchk/iface_state/${_iface}_lock" 2>/dev/null)
-    if [ "$lock_status" = "lock" ]; then
-        return 1  # CPE状态异常
-    elif [ "$lock_status" = "unlock" ]; then
-        return 1  # CPE状态异常
-    fi
-
-    # 2. 读取主状态文件
+    # 读取主状态文件
     wan_status=$(cat "/var/run/wanchk/iface_state/$_iface" 2>/dev/null)
 
     # 如果主状态为down，尝试读取IPv6状态
@@ -120,21 +112,23 @@ get_cpe_status() {
         wan_status=$(cat "/var/run/wanchk/iface_state/${_iface}_6" 2>/dev/null)
     fi
 
-    # 3. 根据状态判断处理方式
+    # 根据状态判断处理方式
     case "$wan_status" in
         "up")
             return 0  # CPE状态正常
             ;;
-        "down")
-            log_message "WARN" "CPE状态异常: $wan_status"
-            return 1  # CPE状态异常
-            ;;
-        "block")
-            return 1  # CPE状态异常
-            ;;
-        *)
-            # 状态未知或为空时，进一步检查
-            return 1  # CPE状态异常
+        "down"|"block"|*)
+            # 非up状态时检查信号强度
+            local signal=$(get_signal)
+            if [ $? -eq 0 ] && [ -n "$signal" ]; then
+                # 有信号，清空锁频时间记录并跳过检测
+                FREQUENCY_LOCK_TIME=""
+                return 2
+            else
+                # 无信号，需要处理
+                log_message "WARN" "CPE状态异常: $wan_status"
+                return 1
+            fi
             ;;
     esac
 }
@@ -352,22 +346,15 @@ handle_frequency_lock() {
     local lock_duration=$((current_timestamp - lock_start_timestamp))
 
 
+    # 如果锁频超过30秒，开始按默认顺序切换频点
+    if [ $lock_duration -gt 30 ]; then
+        log_message "INFO" "锁频超过30秒，开始按默认顺序切换频点"
 
-    # 如果锁频超过40秒，检查信号强度
-    if [ $lock_duration -gt 40 ]; then
-        # 获取当前信号强度
-        local signal=$(get_signal)
-        if [ $? -eq 0 ] && [ -n "$signal" ]; then
-            log_message "INFO" "锁频超过40秒但能获取到信号 (RSRP: ${signal}dBm)，继续等待"
-        else
-            log_message "INFO" "锁频超过40秒且无法获取信号，开始按默认顺序切换频点"
+        # 清空锁频时间记录，避免重复触发
+        FREQUENCY_LOCK_TIME=""
 
-            # 清空锁频时间记录，避免重复触发
-            FREQUENCY_LOCK_TIME=""
-
-            # 按默认顺序依次切换频点
-            try_default_frequencies
-        fi
+        # 按默认顺序依次切换频点
+        try_default_frequencies
     fi
 }
 
@@ -465,8 +452,9 @@ handle_status_recovery() {
         # 构建消息内容
         local message="CPE状态通知:\n- CPE异常时间: ${disconnect_readable_time}\n- 恢复时间: ${current_time}\n- 异常持续: ${duration_readable}\n- 当前PCI5值: ${current_pci5}"
 
-        # 发送钉钉消息
-        log_message "INFO" "准备发送钉钉通知消息"
+        # 延迟10秒后发送钉钉消息
+        log_message "INFO" "准备发送钉钉通知消息（10秒后发送）"
+        sleep 10
         send_dingtalk_message "$message"
         local dingtalk_result=$?
         if [ $dingtalk_result -eq 0 ]; then
@@ -595,6 +583,10 @@ perform_network_monitoring() {
 
             # CPE状态异常立即进行智能锁频
             handle_frequency_lock
+            ;;
+        2)
+            # 跳过检测（非up状态但有信号）
+            return 1  # 返回1表示跳过检测
             ;;
     esac
 
@@ -730,6 +722,7 @@ case "$1" in
         case $status_result in
             0) echo "CPE状态正常" ;;
             1) echo "CPE状态异常"; exit 1 ;;
+            2) echo "跳过检测 - 非up状态但有信号"; exit 2 ;;
         esac
         ;;
     "")
@@ -755,7 +748,7 @@ case "$1" in
         echo "守护进程功能:"
         echo "  - 每2秒检测CPE连接状态"
         echo "  - CPE状态异常立即按默认顺序切换频点"
-        echo "  - 锁频超过40秒且无法获取信号时按默认顺序依次切换频点"
+        echo "  - 锁频超过30秒时按默认顺序依次切换频点"
         echo "  - 在6:50,16:30,18:30,20:30检查PCI 141"
         echo "  - CPE状态恢复时发送钉钉通知"
         echo ""
