@@ -232,8 +232,8 @@ select_best_frequency() {
 
 # 锁定到指定频点
 lock_to_frequency() {
-    local earfcn="$1"
     local pci="$2"
+    local earfcn="$1"
     
     if [ -z "$earfcn" ] || [ -z "$pci" ]; then
         log_message "ERROR" "锁频参数无效: EARFCN=$earfcn, PCI=$pci"
@@ -375,10 +375,6 @@ get_speedlimit_info() {
     fi
 }
 
-
-
-
-
 # 直接切换到earfcn5=633984,pci5=141（用于特定时间点检查）
 lock_cellular_141() {
     local current_pci5=$(uci -q get cpecfg.cpesim1.pci5)
@@ -459,7 +455,7 @@ handle_network_recovery() {
     fi
 }
 
-# 检查是否在指定时间点（6:50，8:50，12:50，14:50，16:50，18:50，20:50）
+# 检查是否在指定时间点（6:50，8:50，14:50，16:50，18:50，20:50）
 check_specific_time() {
     # 获取当前小时和分钟
     local current_hour=$(date '+%H')
