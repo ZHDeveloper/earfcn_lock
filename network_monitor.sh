@@ -435,44 +435,7 @@ disable_speed_limit() {
     log_message "INFO" "限速功能禁用完成（已创建保护标记）"
 }
 
-# 检查并维护限速禁用状态
-check_and_maintain_speedlimit_disabled() {
-    # 检查是否存在保护标记文件
-    if [ ! -f "/tmp/speedlimit_disabled_by_monitor" ]; then
-        return 0  # 没有标记文件，不需要维护
-    fi
 
-    # 检查当前限速支持状态
-    local support_status=$(uci -q get cloudd.limit.support)
-    if [ "$support_status" != "0" ]; then
-        log_message "WARN" "检测到限速支持被重新启用，正在恢复禁用状态"
-
-        # 重新禁用限速支持
-        uci set cloudd.limit.support='0'
-        uci commit cloudd
-
-        # 重新禁用所有限速规则
-        uci -q foreach cloudd speedlimit '
-            uci set cloudd.$1.enabled="0"
-        '
-        uci commit cloudd
-
-        # 重启服务
-        /etc/init.d/cloudd restart 2>/dev/null || true
-
-        log_message "INFO" "已恢复限速禁用状态"
-    fi
-
-    # 检查具体的限速规则状态
-    local nocombo_enabled=$(uci -q get cloudd.limit_nocombo.enabled)
-    if [ "$nocombo_enabled" = "1" ]; then
-        log_message "WARN" "检测到无套餐限速被重新启用，正在禁用"
-        uci set cloudd.limit_nocombo.enabled='0'
-        uci commit cloudd
-        /etc/init.d/cloudd restart 2>/dev/null || true
-        log_message "INFO" "已重新禁用无套餐限速"
-    fi
-}
 
 # 直接切换到earfcn5=633984,pci5=141（用于特定时间点检查）
 lock_cellular_141() {
@@ -648,9 +611,6 @@ perform_network_monitoring() {
         log_message "DEBUG" "在锁频等待期内，跳过网络检测"
         return 1  # 返回1表示跳过检测
     fi
-
-    # 检查并维护限速禁用状态（每次监控都检查）
-    check_and_maintain_speedlimit_disabled
 
     # 检查网络连接
     if ! check_cpe_status; then
@@ -880,7 +840,6 @@ case "$1" in
         echo "  - 锁频后50秒内不检测网络，50秒后恢复检测"
         echo "  - 在6:50,8:50,14:50,16:50,18:50,20:50检查PCI 141"
         echo "  - 网络恢复时发送钉钉通知"
-        echo "  - 自动维护限速禁用状态（如果已禁用）"
         echo ""
         echo "测试命令:"
         echo "  -g:       显示当前CPE信号强度 (RSRP值)"
