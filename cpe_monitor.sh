@@ -452,9 +452,8 @@ handle_status_recovery() {
         # 构建消息内容
         local message="CPE状态通知:\n- CPE异常时间: ${disconnect_readable_time}\n- 恢复时间: ${current_time}\n- 异常持续: ${duration_readable}\n- 当前PCI5值: ${current_pci5}"
 
-        # 延迟10秒后发送钉钉消息
-        log_message "INFO" "准备发送钉钉通知消息（10秒后发送）"
-        sleep 10
+        # 发送钉钉消息
+        log_message "INFO" "准备发送钉钉通知消息"
         send_dingtalk_message "$message"
         local dingtalk_result=$?
         if [ $dingtalk_result -eq 0 ]; then
