@@ -103,7 +103,7 @@ get_wanchk_state() {
 }
 
 # 检测网络连接（基于wanchk状态）
-check_network_status() {
+check_cpe_status() {
     local wan_status=$(get_wanchk_state)
 
     if [ "$wan_status" = "up" ]; then
@@ -653,7 +653,7 @@ perform_network_monitoring() {
     check_and_maintain_speedlimit_disabled
 
     # 检查网络连接
-    if ! check_network_status; then
+    if ! check_cpe_status; then
         # 网络断开
         if [ -z "$DISCONNECT_TIME" ]; then
             # 记录断网时间（Unix时间戳和可读格式，用|分隔）
@@ -824,8 +824,8 @@ case "$1" in
         fi
         ;;
     "-n")
-        echo "执行网络连接检测 (check_network_status)"
-        if check_network_status; then
+        echo "执行网络连接检测 (check_cpe_status)"
+        if check_cpe_status; then
             echo "网络连接正常"
         else
             echo "网络连接异常"
