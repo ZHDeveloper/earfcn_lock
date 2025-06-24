@@ -113,11 +113,14 @@ get_cpe_status() {
     local _iface="cpe"
     local wan_status=""
     local lock_status=""
-
+    
     # 1. 首先检查锁定状态文件
     lock_status=$(cat "/var/run/wanchk/iface_state/${_iface}_lock" 2>/dev/null)
     if [ "$lock_status" = "lock" ]; then
         log_message "DEBUG" "CPE处于锁定状态，跳过CPE状态检测"
+        return 2  # 跳过检测
+    elif [ "$lock_status" = "unlock" ]; then
+        log_message "DEBUG" "CPE解锁状态，跳过CPE状态检测"
         return 2  # 跳过检测
     fi
 
@@ -145,18 +148,13 @@ get_cpe_status() {
             ;;
         *)
             # 状态未知或为空时，进一步检查
-            if [ "$lock_status" = "unlock" ]; then
-                log_message "DEBUG" "CPE解锁状态，但CPE状态未知: '$wan_status'，视为异常"
-                return 1  # CPE状态异常
+            # 检查是否有cpetools进程在运行
+            if check_cpetools_running; then
+                log_message "DEBUG" "检测到cpetools进程正在运行，可能正在锁频操作"
+                return 2  # 跳过检测
             else
-                # 检查是否有cpetools进程在运行
-                if check_cpetools_running; then
-                    log_message "DEBUG" "检测到cpetools进程正在运行，可能正在锁频操作"
-                    return 2  # 跳过检测
-                else
-                    log_message "WARN" "无法获取CPE状态或状态未知: '$wan_status'"
-                    return 1  # CPE状态异常
-                fi
+                log_message "DEBUG" "无法获取CPE状态或状态未知: '$wan_status'，跳过CPE状态检测"
+                return 2  # 跳过检测
             fi
             ;;
     esac
