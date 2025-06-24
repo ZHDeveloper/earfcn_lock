@@ -4,12 +4,30 @@
 # 功能：每1秒检测网络连接状态，断网立即扫描频点并按PCI优先级锁频
 #       在网络恢复时发送钉钉通知消息
 #       在指定时间点（6:50，8:50，14:50，16:50，18:50，20:50）检查是否需要切换到PCI 141
+# 兼容性：针对 OpenWrt busybox ash shell 优化
 
 # 日志文件路径
 LOG_FILE="/tmp/network_monitor.log"
 
 # PID文件
 PID_FILE="/tmp/network_monitor.pid"
+
+# 检查必要工具是否可用
+check_required_tools() {
+    local missing_tools=""
+
+    for tool in uci jsonfilter awk curl; do
+        if ! command -v "$tool" >/dev/null 2>&1; then
+            missing_tools="$missing_tools $tool"
+        fi
+    done
+
+    if [ -n "$missing_tools" ]; then
+        echo "错误: 缺少必要工具:$missing_tools" >&2
+        return 1
+    fi
+    return 0
+}
 
 # 全局变量：断网时间记录（Unix时间戳|可读格式）
 DISCONNECT_TIME=""
@@ -22,6 +40,41 @@ LAST_CHECK_TIME=""
 
 # 全局变量：上次指定时间点检查时间（防止重复执行lock_cellular_141）
 LAST_SPECIFIC_TIME_CHECK=""
+
+# 兼容性更好的进程检查函数
+check_cpetools_running() {
+    # 优先使用 pgrep -f（如果支持）
+    if command -v pgrep >/dev/null 2>&1; then
+        if pgrep -f "cpetools" >/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+
+    # 备用方法：使用 ps + grep
+    if ps | grep -v grep | grep "cpetools" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    return 1
+}
+
+# 更可靠的文件大小检查函数
+get_file_size() {
+    local file="$1"
+    local size=0
+
+    if [ -f "$file" ]; then
+        # 优先使用 stat（如果可用）
+        if command -v stat >/dev/null 2>&1; then
+            size=$(stat -c%s "$file" 2>/dev/null || echo 0)
+        else
+            # 备用方法：使用 wc
+            size=$(wc -c < "$file" 2>/dev/null || echo 0)
+        fi
+    fi
+
+    echo "$size"
+}
 
 # 日志记录函数
 # 参数1: 日志级别 (e.g., INFO, WARN, ERROR)
@@ -199,10 +252,23 @@ compare_rsrp() {
         return 0  # rsrp2无效，rsrp1更好
     fi
 
-    # 使用awk进行浮点数比较
+    # 使用awk进行浮点数比较（兼容busybox awk）
     # RSRP值越大（越接近0）越好，所以rsrp1 > rsrp2时返回0（第一个更好）
-    local result=$(awk "BEGIN { print ($rsrp1 > $rsrp2) ? 0 : 1 }")
-    return $result
+    if command -v awk >/dev/null 2>&1; then
+        local result=$(awk "BEGIN { print ($rsrp1 > $rsrp2) ? 0 : 1 }" 2>/dev/null)
+        if [ -n "$result" ]; then
+            return $result
+        fi
+    fi
+
+    # 备用方法：简单的整数比较（去掉小数点）
+    local int1=$(echo "$rsrp1" | sed 's/[.-]//g')
+    local int2=$(echo "$rsrp2" | sed 's/[.-]//g')
+    if [ "$int1" -gt "$int2" ]; then
+        return 0
+    else
+        return 1
+    fi
 }
 
 # 按PCI优先级选择最佳频点组合
@@ -232,35 +298,67 @@ select_best_frequency() {
     # 根据RSRP最大值选择（RSRP值越大越好，即越接近0）
     # RSRP通常是负数，如-80dBm，值越大（越接近0）信号越好
 
-    # 使用awk进行RSRP比较，避免shell循环中的变量作用域问题
-    local best_match=$(echo "$available_combinations" | awk -F'|' '
-    BEGIN {
-        best_rsrp = ""
-        best_line = ""
-        combination_count = 0
-    }
-    {
-        earfcn = $1
-        pci = $2
-        rsrp = $3
+    # 使用awk进行RSRP比较，兼容busybox awk
+    local best_match=""
+    if command -v awk >/dev/null 2>&1; then
+        best_match=$(echo "$available_combinations" | awk -F'|' '
+        BEGIN {
+            best_rsrp = ""
+            best_line = ""
+            combination_count = 0
+        }
+        {
+            earfcn = $1
+            pci = $2
+            rsrp = $3
 
-        if (earfcn != "" && pci != "" && rsrp != "") {
-            combination_count++
+            if (earfcn != "" && pci != "" && rsrp != "") {
+                combination_count++
 
-            # 验证RSRP是否为有效数值（包括负数和小数）
-            if (rsrp ~ /^-?[0-9]+(\.[0-9]+)?$/) {
-                if (best_rsrp == "" || rsrp > best_rsrp) {
-                    best_rsrp = rsrp
-                    best_line = $0
+                # 验证RSRP是否为有效数值（包括负数和小数）
+                if (rsrp ~ /^-?[0-9]+(\.[0-9]+)?$/) {
+                    if (best_rsrp == "" || rsrp > best_rsrp) {
+                        best_rsrp = rsrp
+                        best_line = $0
+                    }
                 }
             }
         }
-    }
-    END {
-        if (best_line != "") {
-            print best_line "|" combination_count
-        }
-    }')
+        END {
+            if (best_line != "") {
+                print best_line "|" combination_count
+            }
+        }' 2>/dev/null)
+    fi
+
+    # 如果awk失败，使用shell循环备用方法（避免管道子shell问题）
+    if [ -z "$best_match" ]; then
+        local best_rsrp=""
+        local best_line=""
+        local combination_count=0
+        local temp_result_file="/tmp/rsrp_result_$$"
+
+        # 使用临时文件避免管道子shell变量作用域问题
+        echo "$available_combinations" > "$temp_result_file"
+
+        while IFS='|' read -r earfcn pci rsrp; do
+            if [ -n "$earfcn" ] && [ -n "$pci" ] && [ -n "$rsrp" ]; then
+                combination_count=$((combination_count + 1))
+                if echo "$rsrp" | grep -qE '^-?[0-9]+(\.[0-9]+)?$'; then
+                    if [ -z "$best_rsrp" ] || compare_rsrp "$rsrp" "$best_rsrp"; then
+                        best_rsrp="$rsrp"
+                        best_line="$earfcn|$pci|$rsrp"
+                    fi
+                fi
+            fi
+        done < "$temp_result_file"
+
+        rm -f "$temp_result_file"
+
+        if [ -n "$best_line" ]; then
+            best_match="$best_line|$combination_count"
+        fi
+    fi
 
     if [ -n "$best_match" ]; then
         local earfcn=$(echo "$best_match" | cut -d'|' -f1)
@@ -374,8 +472,7 @@ is_cpe_locked() {
             return 0  # CPE被阻塞
         else
             # 如果没有锁定状态且不是block状态，检查是否有cpetools进程在运行
-            local cpetools_running=$(pgrep -f "cpetools" 2>/dev/null)
-            if [ -n "$cpetools_running" ]; then
+            if check_cpetools_running; then
                 log_message "DEBUG" "检测到cpetools进程正在运行，可能正在锁频操作"
                 return 0  # 可能正在进行锁频操作
             else
@@ -553,7 +650,7 @@ check_and_clear_log() {
     # 检查日志文件大小是否超过10MB
     if [ -f "$LOG_FILE" ]; then
         # 获取文件大小（字节）
-        local file_size=$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)
+        local file_size=$(get_file_size "$LOG_FILE")
         # 10MB = 10485760 字节
         if [ "$file_size" -gt 10485760 ]; then
             should_clear=true
@@ -649,6 +746,12 @@ daemon_loop() {
 
 # 启动守护进程
 start_daemon() {
+    # 检查必要工具是否可用
+    if ! check_required_tools; then
+        echo "启动失败：缺少必要工具" >&2
+        exit 1
+    fi
+
     # 检查是否已经在运行
     if [ -f "$PID_FILE" ]; then
         local old_pid=$(cat "$PID_FILE")
@@ -802,13 +905,12 @@ case "$1" in
             # 显示详细的锁定状态信息
             local cpe_lock_status=$(cat "/var/run/wanchk/iface_state/cpe_lock" 2>/dev/null)
             local cpe_status=$(cat "/var/run/wanchk/iface_state/cpe" 2>/dev/null)
-            local cpetools_running=$(pgrep -f "cpetools" 2>/dev/null)
 
             echo "详细状态信息:"
             echo "  - 锁定状态文件: ${cpe_lock_status:-'不存在'}"
             echo "  - CPE状态文件: ${cpe_status:-'不存在'}"
-            if [ -n "$cpetools_running" ]; then
-                echo "  - cpetools进程: 正在运行 (PID: $cpetools_running)"
+            if check_cpetools_running; then
+                echo "  - cpetools进程: 正在运行"
             else
                 echo "  - cpetools进程: 未运行"
             fi
