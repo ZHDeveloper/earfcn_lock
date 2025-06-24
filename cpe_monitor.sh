@@ -21,6 +21,9 @@ LAST_CHECK_TIME=""
 # 全局变量：上次指定时间点检查时间（防止重复执行lock_cellular_141）
 LAST_SPECIFIC_TIME_CHECK=""
 
+# 全局变量：锁频开始时间记录（Unix时间戳|可读格式）
+FREQUENCY_LOCK_TIME=""
+
 # 获取文件大小
 get_file_size() {
     local file="$1"
@@ -70,8 +73,6 @@ send_dingtalk_message() {
 get_signal() {
     local _iface="cpe"
     local rsrp=""
-    local up=""
-    local uptime=""
 
     # 使用ubus获取CPE状态信息
     local cpe_status=$(ubus call infocd cpestatus 2>/dev/null)
@@ -79,12 +80,10 @@ get_signal() {
         # 提取指定接口的状态信息
         local iface_info=$(echo "$cpe_status" | jsonfilter -e '@.*[@.status.name="'${_iface}'"]' 2>/dev/null)
         if [ -n "$iface_info" ]; then
-            up=$(echo "$iface_info" | jsonfilter -e '@.up' 2>/dev/null)
-            uptime=$(echo "$iface_info" | jsonfilter -e '@.uptime' 2>/dev/null)
             rsrp=$(echo "$iface_info" | jsonfilter -e '@.status.rsrp' 2>/dev/null)
 
-            # 检查接口状态：up=0且uptime>0表示连接正常
-            if [ "$up" = "0" ] && [ -n "$uptime" ] && [ "$uptime" -gt 0 ]; then
+            # 检查是否获取到有效的rsrp值
+            if [ -n "$rsrp" ] && [ "$rsrp" != "null" ]; then
                 echo "$rsrp"
                 return 0
             fi
@@ -100,20 +99,17 @@ get_signal() {
 # 返回值：
 #   0 - CPE状态正常，继续监控
 #   1 - CPE状态异常，需要处理
-#   2 - 跳过检测（CPE锁定或其他阻塞状态）
 get_cpe_status() {
     local _iface="cpe"
     local wan_status=""
     local lock_status=""
-    
+
     # 1. 首先检查锁定状态文件
     lock_status=$(cat "/var/run/wanchk/iface_state/${_iface}_lock" 2>/dev/null)
     if [ "$lock_status" = "lock" ]; then
-        log_message "DEBUG" "CPE处于锁定状态，跳过CPE状态检测"
-        return 2  # 跳过检测
+        return 1  # CPE状态异常
     elif [ "$lock_status" = "unlock" ]; then
-        log_message "DEBUG" "CPE解锁状态，跳过CPE状态检测"
-        return 2  # 跳过检测
+        return 1  # CPE状态异常
     fi
 
     # 2. 读取主状态文件
@@ -134,12 +130,10 @@ get_cpe_status() {
             return 1  # CPE状态异常
             ;;
         "block")
-            log_message "DEBUG" "CPE状态为block，跳过CPE状态检测"
-            return 2  # 跳过检测
+            return 1  # CPE状态异常
             ;;
         *)
             # 状态未知或为空时，进一步检查
-            log_message "DEBUG" "无法获取CPE状态或状态未知: '$wan_status'，跳过CPE状态检测"
             return 1  # CPE状态异常
             ;;
     esac
@@ -160,21 +154,16 @@ scan_frequencies() {
 
             # 如果缓存文件在10分钟内，直接返回缓存内容
             if [ $time_diff -lt $cache_valid_duration ]; then
-                log_message "INFO" "使用缓存的扫描结果（${time_diff}秒前扫描）"
                 local scan_result=$(cat "$cache_file")
                 echo "$scan_result"
                 return 0
-            else
-                log_message "INFO" "缓存已过期（${time_diff}秒前扫描），重新扫描"
             fi
         fi
     fi
 
     # 执行新的扫描
-    log_message "INFO" "开始扫描附近频点"
     cpetools.sh -i cpe -c scan > "$cache_file"
     if [ $? -eq 0 ] && [ -s "$cache_file" ]; then
-        log_message "INFO" "频点扫描成功，结果已保存到 $cache_file"
         local scan_result=$(cat "$cache_file")
         echo "$scan_result"
         return 0
@@ -236,8 +225,6 @@ select_best_frequency() {
 
     # PCI优先级列表
     local priority_pcis="141 189 296 93"
-
-    log_message "INFO" "可用频点组合: $available_combinations"
 
     # 按优先级查找可用的PCI
     for priority_pci in $priority_pcis; do
@@ -326,11 +313,15 @@ lock_to_frequency() {
     
     if [ $? -eq 0 ]; then
         log_message "INFO" "参数已从 earfcn5=$current_earfcn5,pci5=$current_pci5 切换到 earfcn5=$earfcn,pci5=$pci"
+
+        # 记录锁频开始时间
+        local timestamp=$(date '+%s')
+        local readable_time=$(date '+%Y-%m-%d %H:%M:%S')
+        FREQUENCY_LOCK_TIME="${timestamp}|${readable_time}"
+
         # 执行更新命令
-        log_message "INFO" "开始执行更新命令: cpetools.sh -u"
         cpetools.sh -u
         if [ $? -eq 0 ]; then
-            log_message "INFO" "更新命令执行成功"
             return 0
         else
             log_message "WARN" "更新命令执行失败"
@@ -342,23 +333,77 @@ lock_to_frequency() {
     fi
 }
 
-# 智能锁频处理
+# 智能锁频处理 - 检查锁频超时并切换频点
 handle_frequency_lock() {
-    log_message "INFO" "开始处理智能锁频，扫描并锁定最佳频点"
-
-    local scan_result=$(scan_frequencies)
-    if [ $? -eq 0 ] && [ -n "$scan_result" ]; then
-        local best_combination=$(select_best_frequency "$scan_result")
-        if [ -n "$best_combination" ]; then
-            local earfcn=$(echo "$best_combination" | cut -d'|' -f1)
-            local pci=$(echo "$best_combination" | cut -d'|' -f2)
-            lock_to_frequency "$earfcn" "$pci"
-        else
-            log_message "ERROR" "无法选择最佳频点组合"
-        fi
-    else
-        log_message "ERROR" "频点扫描失败，无法进行智能锁频"
+    # 检查是否有锁频时间记录
+    if [ -z "$FREQUENCY_LOCK_TIME" ]; then
+        log_message "INFO" "无锁频时间记录，立即尝试锁频"
+        # 按默认顺序依次切换频点
+        try_default_frequencies
+        return 0
     fi
+
+    # 从变量中提取时间戳和可读时间
+    local lock_start_timestamp=$(echo "$FREQUENCY_LOCK_TIME" | cut -d'|' -f1)
+    local lock_start_readable=$(echo "$FREQUENCY_LOCK_TIME" | cut -d'|' -f2)
+
+    # 计算锁频持续时间
+    local current_timestamp=$(date '+%s')
+    local lock_duration=$((current_timestamp - lock_start_timestamp))
+
+
+
+    # 如果锁频超过40秒，检查信号强度
+    if [ $lock_duration -gt 40 ]; then
+        # 获取当前信号强度
+        local signal=$(get_signal)
+        if [ $? -eq 0 ] && [ -n "$signal" ]; then
+            log_message "INFO" "锁频超过40秒但能获取到信号 (RSRP: ${signal}dBm)，继续等待"
+        else
+            log_message "INFO" "锁频超过40秒且无法获取信号，开始按默认顺序切换频点"
+
+            # 清空锁频时间记录，避免重复触发
+            FREQUENCY_LOCK_TIME=""
+
+            # 按默认顺序依次切换频点
+            try_default_frequencies
+        fi
+    fi
+}
+
+# 尝试默认频点配置
+try_default_frequencies() {
+    log_message "INFO" "开始尝试默认频点配置策略"
+
+    # 默认频点配置列表（按优先级排序）
+    local default_frequencies="627264|296 633984|189 633984|93 633984|141"
+
+    # 获取当前配置
+    local current_pci5=$(uci -q get cpecfg.cpesim1.pci5)
+    local current_earfcn5=$(uci -q get cpecfg.cpesim1.earfcn5)
+    local current_combination="${current_earfcn5}|${current_pci5}"
+
+    # 遍历默认频点配置
+    for freq_combination in $default_frequencies; do
+        local earfcn=$(echo "$freq_combination" | cut -d'|' -f1)
+        local pci=$(echo "$freq_combination" | cut -d'|' -f2)
+
+        # 跳过当前已经配置的组合
+        if [ "$freq_combination" = "$current_combination" ]; then
+            continue
+        fi
+
+        log_message "INFO" "尝试默认频点配置: EARFCN=$earfcn, PCI=$pci"
+        if lock_to_frequency "$earfcn" "$pci"; then
+            log_message "INFO" "成功切换到默认频点配置: EARFCN=$earfcn, PCI=$pci"
+            return 0
+        else
+            log_message "WARN" "默认频点配置切换失败: EARFCN=$earfcn, PCI=$pci，尝试下一个"
+        fi
+    done
+
+    log_message "ERROR" "所有默认频点配置尝试失败"
+    return 1
 }
 
 # 直接切换到earfcn5=633984,pci5=141（用于特定时间点检查）
@@ -388,10 +433,13 @@ lock_cellular_141() {
     fi
 }
 
-
-
 # 处理CPE状态恢复的函数
 handle_status_recovery() {
+    # 清空锁频时间记录（CPE状态恢复时）
+    if [ -n "$FREQUENCY_LOCK_TIME" ]; then
+        FREQUENCY_LOCK_TIME=""
+    fi
+
     # 如果存在CPE状态异常记录则发送钉钉消息并清空记录变量
     if [ -n "$DISCONNECT_TIME" ]; then
         # 获取当前时间
@@ -548,10 +596,6 @@ perform_network_monitoring() {
             # CPE状态异常立即进行智能锁频
             handle_frequency_lock
             ;;
-        2)
-            # 跳过检测（CPE锁定或阻塞状态）
-            return 1  # 返回1表示跳过检测
-            ;;
     esac
 
     return 0  # 返回0表示正常执行
@@ -686,7 +730,6 @@ case "$1" in
         case $status_result in
             0) echo "CPE状态正常" ;;
             1) echo "CPE状态异常"; exit 1 ;;
-            2) echo "跳过检测 - CPE锁定或阻塞状态"; exit 2 ;;
         esac
         ;;
     "")
@@ -711,8 +754,8 @@ case "$1" in
         echo ""
         echo "守护进程功能:"
         echo "  - 每2秒检测CPE连接状态"
-        echo "  - CPE状态异常立即扫描频点并按PCI优先级锁频"
-        echo "  - CPE锁定状态时跳过CPE状态检测，解锁后恢复检测"
+        echo "  - CPE状态异常立即按默认顺序切换频点"
+        echo "  - 锁频超过40秒且无法获取信号时按默认顺序依次切换频点"
         echo "  - 在6:50,16:30,18:30,20:30检查PCI 141"
         echo "  - CPE状态恢复时发送钉钉通知"
         echo ""
