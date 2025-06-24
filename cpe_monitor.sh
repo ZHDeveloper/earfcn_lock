@@ -170,9 +170,9 @@ scan_frequencies() {
 
     # 检查缓存文件是否存在且有内容
     if [ -s "$cache_file" ]; then
-        # 获取缓存文件的修改时间
-        local cache_time=$(stat -c %Y "$cache_file" 2>/dev/null)
-        if [ -n "$cache_time" ]; then
+        # 获取缓存文件的修改时间（针对OpenWrt优化）
+        local cache_time=$(stat -c %Y "$cache_file" 2>/dev/null || echo "0")
+        if [ "$cache_time" != "0" ]; then
             local time_diff=$((current_time - cache_time))
 
             # 如果缓存文件在10分钟内，直接返回缓存内容
@@ -319,8 +319,8 @@ select_best_frequency() {
 
 # 锁定到指定频点
 lock_to_frequency() {
-    local pci="$2"
     local earfcn="$1"
+    local pci="$2"
     
     if [ -z "$earfcn" ] || [ -z "$pci" ]; then
         log_message "ERROR" "锁频参数无效: EARFCN=$earfcn, PCI=$pci"
@@ -537,9 +537,9 @@ check_and_clear_log() {
         should_clear=true
         clear_reason="文件大小超过8MB"
     else
-        # 检查日志文件是否超过36小时
+        # 检查日志文件是否超过36小时（针对OpenWrt优化）
         local current_timestamp=$(date '+%s')
-        local file_timestamp=$(stat -c %Y "$LOG_FILE" 2>/dev/null || stat -f %m "$LOG_FILE" 2>/dev/null || echo "0")
+        local file_timestamp=$(stat -c %Y "$LOG_FILE" 2>/dev/null || echo "0")
         local time_diff=$((current_timestamp - file_timestamp))
         # 36小时 = 129600秒
         if [ "$time_diff" -gt 129600 ]; then
@@ -586,10 +586,10 @@ perform_network_monitoring() {
                 local readable_time=$(date '+%Y-%m-%d %H:%M:%S')
                 DISCONNECT_TIME="${timestamp}|${readable_time}"
                 log_message "INFO" "CPE状态异常，开始记录异常时间: $readable_time"
-            else
-                # CPE状态异常立即进行智能锁频
-                handle_frequency_lock
             fi
+
+            # CPE状态异常立即进行智能锁频
+            handle_frequency_lock
             ;;
         2)
             # 跳过检测（CPE锁定或阻塞状态）
