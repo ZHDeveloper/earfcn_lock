@@ -381,8 +381,8 @@ handle_frequency_lock() {
 # 获取限速信息（参考get_speedlimit_info）
 get_speedlimit_info() {
     local support_status=$(uci -q get cloudd.limit.support)
-    local has_enabled_rules=0
     local enabled_rules=""
+    local temp_file="/tmp/speedlimit_rules_$$"
 
     # 检查是否支持限速
     if [ "$support_status" != "1" ]; then
@@ -390,24 +390,28 @@ get_speedlimit_info() {
         return 1
     fi
 
-    # 检查是否有启用的限速规则
-    uci -q foreach cloudd speedlimit '
-        local rule_name="$1"
-        local rule_enabled=$(uci -q get cloudd.$rule_name.enabled)
-        if [ "$rule_enabled" = "1" ]; then
-            has_enabled_rules=1
-            if [ -z "$enabled_rules" ]; then
-                enabled_rules="$rule_name"
-            else
-                enabled_rules="$enabled_rules,$rule_name"
-            fi
-        fi
-    '
+    # 使用临时文件收集启用的限速规则，避免子shell变量作用域问题
+    > "$temp_file"  # 清空临时文件
 
-    if [ $has_enabled_rules -eq 1 ]; then
+    # 获取所有speedlimit规则并检查启用状态
+    uci -q foreach cloudd speedlimit "
+        local rule_name=\"\$1\"
+        local rule_enabled=\$(uci -q get cloudd.\$rule_name.enabled)
+        if [ \"\$rule_enabled\" = \"1\" ]; then
+            echo \"\$rule_name\" >> \"$temp_file\"
+        fi
+    "
+
+    # 读取临时文件中的启用规则
+    if [ -s "$temp_file" ]; then
+        # 文件不为空，说明有启用的规则
+        enabled_rules=$(cat "$temp_file" | tr '\n' ',' | sed 's/,$//')  # 用逗号连接并移除末尾逗号
+        rm -f "$temp_file"
         echo "support=1,enabled_rules=$enabled_rules"
         return 0
     else
+        # 文件为空，说明没有启用的规则
+        rm -f "$temp_file"
         echo "support=1,enabled_rules=none"
         return 1
     fi
