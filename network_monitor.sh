@@ -14,8 +14,7 @@ PID_FILE="/tmp/network_monitor.pid"
 # 全局变量：断网时间记录（Unix时间戳|可读格式）
 DISCONNECT_TIME=""
 
-# 全局变量：锁频时间记录（Unix时间戳）
-LOCK_TIME=""
+
 
 # 全局变量：上次日志清理日期
 LAST_LOG_CLEAR_DATE=""
@@ -112,6 +111,9 @@ check_cpe_status() {
     elif [ "$wan_status" = "down" ]; then
         log_message "WARN" "网络状态异常: $wan_status"
         return 1  # 网络异常
+    elif [ "$wan_status" = "block" ]; then
+        log_message "INFO" "网络状态被阻塞: $wan_status (CPE可能处于锁定或暂停状态)"
+        return 1  # 网络被阻塞，视为异常
     else
         # 如果无法获取状态或状态为空，记录详细信息
         log_message "WARN" "无法获取网络状态或状态未知: '$wan_status'"
@@ -261,8 +263,6 @@ lock_to_frequency() {
         cpetools.sh -u
         if [ $? -eq 0 ]; then
             log_message "INFO" "更新命令执行成功"
-            # 记录锁频时间，50秒内不检测网络
-            LOCK_TIME="$(date '+%s')"
 
             # 15秒后再次执行锁频（后台执行）
             (
@@ -308,21 +308,37 @@ handle_network_disconnect() {
     fi
 }
 
-# 检查是否在锁频等待期内（锁频后50秒内不检测网络，50秒后恢复检测）
-is_in_lock_wait_period() {
-    if [ -z "$LOCK_TIME" ]; then
-        return 1 # 没有锁频记录，不在等待期
-    fi
-    
-    local current_time=$(date '+%s')
-    local elapsed_time=$((current_time - LOCK_TIME))
-    
-    if [ $elapsed_time -lt 50 ]; then
-        return 0 # 在等待期内
+# 检查CPE是否处于锁定状态（基于wanchk状态文件）
+is_cpe_locked() {
+    local cpe_lock_status=""
+    local cpe_state_name="cpe"
+
+    # 检查CPE锁定状态文件
+    cpe_lock_status=$(cat "/var/run/wanchk/iface_state/${cpe_state_name}_lock" 2>/dev/null)
+
+    if [ "$cpe_lock_status" = "lock" ]; then
+        log_message "DEBUG" "CPE处于锁定状态，跳过网络检测"
+        return 0  # CPE被锁定
+    elif [ "$cpe_lock_status" = "unlock" ]; then
+        log_message "DEBUG" "CPE解锁状态，继续网络检测"
+        return 1  # CPE未被锁定
     else
-        # 超过50秒，清空锁频记录变量
-        LOCK_TIME=""
-        return 1 # 不在等待期
+        # 如果锁定状态文件不存在或状态未知，检查CPE状态是否为block
+        local cpe_status=$(cat "/var/run/wanchk/iface_state/${cpe_state_name}" 2>/dev/null)
+        if [ "$cpe_status" = "block" ]; then
+            log_message "DEBUG" "CPE状态为block，跳过网络检测"
+            return 0  # CPE被阻塞
+        else
+            # 如果没有锁定状态且不是block状态，检查是否有cpetools进程在运行
+            local cpetools_running=$(pgrep -f "cpetools" 2>/dev/null)
+            if [ -n "$cpetools_running" ]; then
+                log_message "DEBUG" "检测到cpetools进程正在运行，可能正在锁频操作"
+                return 0  # 可能正在进行锁频操作
+            else
+                log_message "DEBUG" "CPE未处于锁定状态，继续网络检测"
+                return 1  # CPE未被锁定
+            fi
+        fi
     fi
 }
 
@@ -606,9 +622,8 @@ check_and_clear_log() {
 
 # 网络监控核心逻辑（通用函数）
 perform_network_monitoring() {
-    # 检查是否在锁频等待期内
-    if is_in_lock_wait_period; then
-        log_message "DEBUG" "在锁频等待期内，跳过网络检测"
+    # 检查CPE是否处于锁定状态
+    if is_cpe_locked; then
         return 1  # 返回1表示跳过检测
     fi
 
@@ -815,12 +830,34 @@ case "$1" in
             echo "✅ 限速功能已被禁用"
         fi
         ;;
+    "-k")
+        echo "检查CPE锁定状态 (is_cpe_locked)"
+        if is_cpe_locked; then
+            echo "🔒 CPE当前处于锁定状态，网络检测已暂停"
+
+            # 显示详细的锁定状态信息
+            local cpe_lock_status=$(cat "/var/run/wanchk/iface_state/cpe_lock" 2>/dev/null)
+            local cpe_status=$(cat "/var/run/wanchk/iface_state/cpe" 2>/dev/null)
+            local cpetools_running=$(pgrep -f "cpetools" 2>/dev/null)
+
+            echo "详细状态信息:"
+            echo "  - 锁定状态文件: ${cpe_lock_status:-'不存在'}"
+            echo "  - CPE状态文件: ${cpe_status:-'不存在'}"
+            if [ -n "$cpetools_running" ]; then
+                echo "  - cpetools进程: 正在运行 (PID: $cpetools_running)"
+            else
+                echo "  - cpetools进程: 未运行"
+            fi
+        else
+            echo "🔓 CPE当前未被锁定，网络检测正常进行"
+        fi
+        ;;
     "")
         echo "默认启动守护进程模式"
         start_daemon
         ;;
     *)
-        echo "用法: $0 [start|stop|restart|status|-c|-s|-r|-g|-w|-n|-d|-l]"
+        echo "用法: $0 [start|stop|restart|status|-c|-s|-r|-g|-w|-n|-d|-l|-k]"
         echo "  start:    启动守护进程（默认）"
         echo "  stop:     停止守护进程"
         echo "  restart:  重启守护进程"
@@ -833,11 +870,12 @@ case "$1" in
         echo "  -n:       执行网络连接检测"
         echo "  -d:       禁用限速功能"
         echo "  -l:       查看限速状态"
+        echo "  -k:       检查CPE锁定状态"
         echo ""
         echo "守护进程功能:"
         echo "  - 每1秒检测网络连接状态"
         echo "  - 断网立即扫描频点并按PCI优先级锁频"
-        echo "  - 锁频后50秒内不检测网络，50秒后恢复检测"
+        echo "  - CPE锁定状态时跳过网络检测，解锁后恢复检测"
         echo "  - 在6:50,8:50,14:50,16:50,18:50,20:50检查PCI 141"
         echo "  - 网络恢复时发送钉钉通知"
         echo ""
@@ -847,6 +885,7 @@ case "$1" in
         echo "  -n:       测试网络连接是否正常"
         echo "  -l:       查看当前限速状态和规则"
         echo "  -d:       智能禁用限速功能，提升网络速度"
+        echo "  -k:       检查CPE锁定状态，显示详细锁定信息"
         exit 1
         ;;
 esac
