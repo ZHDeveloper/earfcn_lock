@@ -136,7 +136,7 @@ get_cpe_status() {
 # 检查网络是否空闲
 is_network_idle() {
     local interface="cpe"
-    local threshold=1024  # 1KB/s
+    local threshold=10240  # 10KB/s
 
     # 检查接口是否存在
     if [ ! -d "/sys/class/net/$interface" ]; then
@@ -487,6 +487,14 @@ handle_status_recovery() {
 
 # 检查是否应该进行PCI 141扫描
 should_scan_for_pci141() {
+    # 检查是否为6:50时间点
+    local current_hour=$(date '+%H')
+    local current_minute=$(date '+%M')
+    if [ "$current_hour" = "06" ] && [ "$current_minute" = "50" ]; then
+        # 6:50时间点，强制扫描
+        return 0
+    fi
+
     # 检查网络是否空闲
     if ! is_network_idle; then
         return 1  # 网络繁忙，不扫描
@@ -792,6 +800,7 @@ case "$1" in
         echo "  - CPE状态异常立即按默认顺序切换频点"
         echo "  - 锁频超过30秒时按默认顺序依次切换频点"
         echo "  - 网络空闲时扫描频点，发现PCI 141时自动切换（间隔20分钟）"
+        echo "  - 每天6:50强制扫描频点，发现PCI 141时自动切换"
         echo "  - CPE状态恢复时发送钉钉通知"
         echo ""
         exit 1
