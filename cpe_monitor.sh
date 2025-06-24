@@ -15,9 +15,6 @@ PID_FILE="/tmp/cpe_monitor.pid"
 # 全局变量：CPE状态异常时间记录（Unix时间戳|可读格式）
 DISCONNECT_TIME=""
 
-# 全局变量：上次日志清理日期
-LAST_LOG_CLEAR_DATE=""
-
 # 全局变量：上次日志检查时间（防止重复执行）
 LAST_CHECK_TIME=""
 
@@ -512,7 +509,7 @@ check_specific_time() {
 }
 
 # 检查并清空日志文件的函数
-# 每天0:00清空日志文件，或者当日志文件大于10MB时清空
+# 日志文件缓存36小时，或日志文件大于8MB时清空
 check_and_clear_log() {
     # 添加分钟级别的防重复机制
     local current_time_key="$(date '+%Y-%m-%d-%H-%M')"
@@ -520,57 +517,41 @@ check_and_clear_log() {
         return 0  # 同一分钟内已检查过，跳过
     fi
     LAST_CHECK_TIME="$current_time_key"
-    
-    local current_date=$(date '+%Y-%m-%d')
-    local current_hour=$(date '+%H')
-    local current_minute=$(date '+%M')
+
     local should_clear=false
     local clear_reason=""
-    
-    # 检查是否为每天0:00
-    if [ "$current_hour" = "00" ] && [ "$current_minute" = "00" ]; then
-        if [ "$LAST_LOG_CLEAR_DATE" != "$current_date" ]; then
+
+    # 检查日志文件是否存在
+    if [ ! -f "$LOG_FILE" ]; then
+        return 0  # 日志文件不存在，无需处理
+    fi
+
+    # 检查日志文件大小是否超过8MB
+    local file_size=$(get_file_size "$LOG_FILE")
+    # 8MB = 8388608 字节
+    if [ "$file_size" -gt 8388608 ]; then
+        should_clear=true
+        clear_reason="文件大小超过8MB"
+    else
+        # 检查日志文件是否超过36小时
+        local current_timestamp=$(date '+%s')
+        local file_timestamp=$(stat -c %Y "$LOG_FILE" 2>/dev/null || stat -f %m "$LOG_FILE" 2>/dev/null || echo "0")
+        local time_diff=$((current_timestamp - file_timestamp))
+        # 36小时 = 129600秒
+        if [ "$time_diff" -gt 129600 ]; then
             should_clear=true
-            clear_reason="每日定时清理"
-            LAST_LOG_CLEAR_DATE="$current_date"
+            clear_reason="日志文件超过36小时缓存期"
         fi
     fi
-    
-    # 检查日志文件大小是否超过10MB
-    if [ -f "$LOG_FILE" ]; then
-        # 获取文件大小（字节）
-        local file_size=$(get_file_size "$LOG_FILE")
-        # 10MB = 10485760 字节
-        if [ "$file_size" -gt 10485760 ]; then
-            should_clear=true
-            clear_reason="文件大小超过10MB"
-        fi
-    fi
-    
+
     # 执行清空操作
     if [ "$should_clear" = true ]; then
-        # 备份最后几行日志信息
-        local backup_info=""
-        if [ -f "$LOG_FILE" ]; then
-            backup_info=$(tail -n 5 "$LOG_FILE" 2>/dev/null || echo "")
-        fi
-        
         # 清空日志文件
         > "$LOG_FILE"
-        
+
         # 记录清理操作
         log_message "INFO" "日志文件已清空 - 原因: $clear_reason"
         log_message "INFO" "清理时间: $(date '+%Y-%m-%d %H:%M:%S')"
-        
-        # 如果有备份信息，记录最后的状态
-        if [ -n "$backup_info" ]; then
-            log_message "INFO" "清理前最后状态:"
-            echo "$backup_info" | while IFS= read -r line; do
-                if [ -n "$line" ]; then
-                    log_message "INFO" "  $line"
-                fi
-            done
-        fi
     fi
 }
 
@@ -620,7 +601,7 @@ daemon_loop() {
     log_message "INFO" "CPE状态监控守护进程启动"
 
     while true; do
-        # 检查并清空日志文件（每天0:00或文件大于10MB时）
+        # 检查并清空日志文件（36小时缓存期或文件大于8MB时）
         check_and_clear_log
 
         # 执行CPE状态监控核心逻辑
