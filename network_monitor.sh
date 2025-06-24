@@ -184,23 +184,45 @@ parse_scan_result() {
     rm -f "$temp_file"
 }
 
+# 比较两个RSRP值，返回较好的那个（更接近0的负数）
+# 参数1: RSRP值1, 参数2: RSRP值2
+# 返回值: 0表示第一个更好，1表示第二个更好
+compare_rsrp() {
+    local rsrp1="$1"
+    local rsrp2="$2"
+
+    # 验证输入是否为有效数值
+    if ! echo "$rsrp1" | grep -qE '^-?[0-9]+(\.[0-9]+)?$'; then
+        return 1  # rsrp1无效，rsrp2更好
+    fi
+    if ! echo "$rsrp2" | grep -qE '^-?[0-9]+(\.[0-9]+)?$'; then
+        return 0  # rsrp2无效，rsrp1更好
+    fi
+
+    # 使用awk进行浮点数比较
+    # RSRP值越大（越接近0）越好，所以rsrp1 > rsrp2时返回0（第一个更好）
+    local result=$(awk "BEGIN { print ($rsrp1 > $rsrp2) ? 0 : 1 }")
+    return $result
+}
+
 # 按PCI优先级选择最佳频点组合
 select_best_frequency() {
     local scan_data="$1"
     local available_combinations=$(parse_scan_result "$scan_data")
-    
+
     # PCI优先级列表
     local priority_pcis="141 189 296 93"
-    
+
     log_message "INFO" "可用频点组合: $available_combinations"
-    
+
     # 按优先级查找可用的PCI
     for priority_pci in $priority_pcis; do
         local match=$(echo "$available_combinations" | grep "|$priority_pci|" | head -1)
         if [ -n "$match" ]; then
             local earfcn=$(echo "$match" | cut -d'|' -f1)
             local pci=$(echo "$match" | cut -d'|' -f2)
-            log_message "INFO" "选择频点组合: EARFCN=$earfcn, PCI=$pci (优先级: $priority_pci)"
+            local rsrp=$(echo "$match" | cut -d'|' -f3)
+            log_message "INFO" "选择频点组合: EARFCN=$earfcn, PCI=$pci, RSRP=$rsrp (优先级: $priority_pci)"
             echo "$earfcn|$pci"
             return 0
         fi
@@ -208,24 +230,48 @@ select_best_frequency() {
     
     log_message "WARN" "未找到优先级PCI，根据RSRP最大值选择"
     # 根据RSRP最大值选择（RSRP值越大越好，即越接近0）
-    local best_match=$(echo "$available_combinations" | awk -F'|' '{
+    # RSRP通常是负数，如-80dBm，值越大（越接近0）信号越好
+
+    # 使用awk进行RSRP比较，避免shell循环中的变量作用域问题
+    local best_match=$(echo "$available_combinations" | awk -F'|' '
+    BEGIN {
+        best_rsrp = ""
+        best_line = ""
+        combination_count = 0
+    }
+    {
+        earfcn = $1
+        pci = $2
         rsrp = $3
-        gsub(/^-/, "", rsrp)  # 移除负号进行数值比较
-        if (NR == 1 || rsrp < min_rsrp) {
-            min_rsrp = rsrp
-            best_line = $0
+
+        if (earfcn != "" && pci != "" && rsrp != "") {
+            combination_count++
+
+            # 验证RSRP是否为有效数值（包括负数和小数）
+            if (rsrp ~ /^-?[0-9]+(\.[0-9]+)?$/) {
+                if (best_rsrp == "" || rsrp > best_rsrp) {
+                    best_rsrp = rsrp
+                    best_line = $0
+                }
+            }
         }
-    } END { print best_line }')
-    
+    }
+    END {
+        if (best_line != "") {
+            print best_line "|" combination_count
+        }
+    }')
+
     if [ -n "$best_match" ]; then
         local earfcn=$(echo "$best_match" | cut -d'|' -f1)
         local pci=$(echo "$best_match" | cut -d'|' -f2)
         local rsrp=$(echo "$best_match" | cut -d'|' -f3)
-        log_message "INFO" "选择RSRP最佳频点组合: EARFCN=$earfcn, PCI=$pci, RSRP=$rsrp"
+        local combination_count=$(echo "$best_match" | cut -d'|' -f4)
+        log_message "INFO" "选择RSRP最佳频点组合: EARFCN=$earfcn, PCI=$pci, RSRP=${rsrp}dBm (共检查${combination_count}个组合)"
         echo "$earfcn|$pci"
         return 0
     else
-        log_message "ERROR" "未找到任何可用的频点组合"
+        log_message "ERROR" "未找到任何有效的频点组合"
         return 1
     fi
 }
@@ -770,6 +816,7 @@ case "$1" in
             echo "🔓 CPE当前未被锁定，网络检测正常进行"
         fi
         ;;
+
     "")
         echo "默认启动守护进程模式"
         start_daemon
