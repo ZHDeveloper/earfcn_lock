@@ -135,7 +135,6 @@ get_cpe_status() {
     # 3. 根据状态判断处理方式
     case "$wan_status" in
         "up")
-            log_message "DEBUG" "CPE状态正常: $wan_status"
             return 0  # CPE状态正常
             ;;
         "down")
