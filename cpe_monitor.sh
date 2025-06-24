@@ -7,10 +7,10 @@
 # 兼容性：针对 OpenWrt busybox ash shell 优化
 
 # 日志文件路径
-LOG_FILE="/tmp/network_monitor.log"
+LOG_FILE="/tmp/cpe_monitor.log"
 
 # PID文件
-PID_FILE="/tmp/network_monitor.pid"
+PID_FILE="/tmp/cpe_monitor.pid"
 
 # 全局变量：CPE状态异常时间记录（Unix时间戳|可读格式）
 DISCONNECT_TIME=""
