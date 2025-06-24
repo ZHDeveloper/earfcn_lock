@@ -113,17 +113,12 @@ get_signal() {
 #   1 - CPE状态异常，需要处理
 #   2 - 跳过检测（CPE锁定或其他阻塞状态）
 get_cpe_status() {
-    local _iface_name="cpe"
-    local _iface=""
+    local _iface="cpe"
     local wan_status=""
     local lock_status=""
 
-    # 获取网络接口名称
-    _iface=$(uci -q get "network.$_iface_name.network_ifname")
-    [ -z "$_iface" ] && _iface="$_iface_name"
-
     # 1. 首先检查锁定状态文件
-    lock_status=$(cat "/var/run/wanchk/iface_state/${_iface_name}_lock" 2>/dev/null)
+    lock_status=$(cat "/var/run/wanchk/iface_state/${_iface}_lock" 2>/dev/null)
     if [ "$lock_status" = "lock" ]; then
         log_message "DEBUG" "CPE处于锁定状态，跳过CPE状态检测"
         return 2  # 跳过检测
