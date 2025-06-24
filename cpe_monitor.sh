@@ -447,7 +447,7 @@ lock_cellular_141() {
 
 
 # 处理CPE状态恢复的函数
-handle_network_recovery() {
+handle_status_recovery() {
     # 如果存在CPE状态异常记录则发送钉钉消息并清空记录变量
     if [ -n "$DISCONNECT_TIME" ]; then
         # 获取当前时间
@@ -576,7 +576,7 @@ perform_network_monitoring() {
             fi
 
             # 处理CPE状态恢复
-            handle_network_recovery
+            handle_status_recovery
             ;;
         1)
             # CPE状态异常
