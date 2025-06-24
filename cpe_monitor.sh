@@ -18,8 +18,8 @@ DISCONNECT_TIME=""
 # 全局变量：上次日志检查时间（防止重复执行）
 LAST_CHECK_TIME=""
 
-# 全局变量：上次指定时间点检查时间（防止重复执行lock_cellular_141）
-LAST_SPECIFIC_TIME_CHECK=""
+# 全局变量：上次扫描时间（防止频繁扫描）
+LAST_SCAN_TIME=""
 
 # 全局变量：锁频开始时间记录（Unix时间戳|可读格式）
 FREQUENCY_LOCK_TIME=""
@@ -133,11 +133,42 @@ get_cpe_status() {
     esac
 }
 
+# 检查网络是否空闲
+is_network_idle() {
+    local interface="cpe"
+    local threshold=1024  # 1KB/s
+
+    # 检查接口是否存在
+    if [ ! -d "/sys/class/net/$interface" ]; then
+        return 1  # 接口不存在，认为非空闲
+    fi
+
+    local rx1=$(cat /sys/class/net/$interface/statistics/rx_bytes 2>/dev/null || echo 0)
+    local tx1=$(cat /sys/class/net/$interface/statistics/tx_bytes 2>/dev/null || echo 0)
+
+    sleep 2
+
+    local rx2=$(cat /sys/class/net/$interface/statistics/rx_bytes 2>/dev/null || echo 0)
+    local tx2=$(cat /sys/class/net/$interface/statistics/tx_bytes 2>/dev/null || echo 0)
+
+    local total_diff=$(((rx2 - rx1) + (tx2 - tx1)))
+    local bytes_per_sec=$((total_diff / 2))
+
+    [ $bytes_per_sec -lt $threshold ]
+}
+
+# 检查CPE是否为up状态
+is_cpe_up() {
+    local _iface="cpe"
+    local wan_status=$(cat "/var/run/wanchk/iface_state/$_iface" 2>/dev/null)
+    [ "$wan_status" = "up" ]
+}
+
 # 扫描附近频点
 scan_frequencies() {
     local cache_file="/var/cpescan_cache_last_cpe"
     local current_time=$(date '+%s')
-    local cache_valid_duration=600  # 10分钟 = 600秒
+    local cache_valid_duration=1200  # 20分钟 = 1200秒
 
     # 检查缓存文件是否存在且有内容
     if [ -s "$cache_file" ]; then
@@ -155,7 +186,19 @@ scan_frequencies() {
         fi
     fi
 
+    # 检查CPE状态和网络空闲状态
+    if ! is_cpe_up; then
+        log_message "WARN" "CPE状态非up，跳过频点扫描"
+        return 1
+    fi
+
+    if ! is_network_idle; then
+        log_message "INFO" "网络繁忙，跳过频点扫描"
+        return 1
+    fi
+
     # 执行新的扫描
+    log_message "INFO" "网络空闲且CPE状态up，开始扫描频点"
     cpetools.sh -i cpe -c scan > "$cache_file"
     if [ $? -eq 0 ] && [ -s "$cache_file" ]; then
         local scan_result=$(cat "$cache_file")
@@ -393,32 +436,7 @@ try_default_frequencies() {
     return 1
 }
 
-# 直接切换到earfcn5=633984,pci5=141（用于特定时间点检查）
-lock_cellular_141() {
-    local current_pci5=$(uci -q get cpecfg.cpesim1.pci5)
 
-    # 如果当前PCI已经是141，则无需处理
-    if [ "$current_pci5" = "141" ]; then
-        return 0
-    fi
-
-    log_message "INFO" "当前PCI不是141，开始扫描频点查找PCI 141"
-
-    local scan_result=$(scan_frequencies)
-    if [ $? -eq 0 ] && [ -n "$scan_result" ]; then
-        # 查找PCI 141的频点组合
-        local pci_141_combination=$(parse_scan_result "$scan_result" | grep "|141|")
-        if [ -n "$pci_141_combination" ]; then
-            local earfcn=$(echo "$pci_141_combination" | cut -d'|' -f1)
-            log_message "INFO" "找到PCI 141，EARFCN=$earfcn，开始切换"
-            lock_to_frequency "$earfcn" "141"
-        else
-            log_message "WARN" "扫描结果中未找到PCI 141"
-        fi
-    else
-        log_message "ERROR" "频点扫描失败，无法检查PCI 141"
-    fi
-}
 
 # 处理CPE状态恢复的函数
 handle_status_recovery() {
@@ -467,28 +485,46 @@ handle_status_recovery() {
     fi
 }
 
-# 检查是否在指定时间点（6:50，16:30，18:30，20:30）
-check_specific_time() {
-    # 获取当前小时和分钟
-    local current_hour=$(date '+%H')
-    local current_minute=$(date '+%M')
-    local current_time="${current_hour}:${current_minute}"
+# 检查是否应该进行PCI 141扫描
+should_scan_for_pci141() {
+    # 检查网络是否空闲
+    if ! is_network_idle; then
+        return 1  # 网络繁忙，不扫描
+    fi
 
-    # 检查是否为指定的时间点
-    case "$current_time" in
-        "06:50"|"16:30"|"18:30"|"20:30")
-            # 添加防重复执行机制
-            local current_time_key="$(date '+%Y-%m-%d-%H-%M')"
-            if [ "$LAST_SPECIFIC_TIME_CHECK" = "$current_time_key" ]; then
-                return 1  # 同一分钟内已执行过，跳过
-            fi
-            LAST_SPECIFIC_TIME_CHECK="$current_time_key"
-            return 0  # 是指定时间点且未重复执行
-            ;;
-        *)
-            return 1  # 不是指定时间点
-            ;;
-    esac
+    # 检查上次扫描时间间隔
+    local current_time=$(date '+%s')
+    if [ -n "$LAST_SCAN_TIME" ]; then
+        local time_diff=$((current_time - LAST_SCAN_TIME))
+        # 20分钟 = 1200秒
+        if [ $time_diff -lt 1200 ]; then
+            return 1  # 间隔不足20分钟，不扫描
+        fi
+    fi
+
+    return 0  # 可以扫描
+}
+
+# 扫描并检查PCI 141，如果发现则锁频
+scan_and_lock_pci141() {
+    # 记录扫描时间
+    LAST_SCAN_TIME=$(date '+%s')
+
+    # 执行扫描
+    local scan_result=$(scan_frequencies)
+    if [ $? -eq 0 ] && [ -n "$scan_result" ]; then
+        # 查找PCI 141的频点组合
+        local pci_141_combination=$(parse_scan_result "$scan_result" | grep "|141|")
+        if [ -n "$pci_141_combination" ]; then
+            local earfcn=$(echo "$pci_141_combination" | cut -d'|' -f1)
+            log_message "INFO" "扫描发现PCI 141，EARFCN=$earfcn，开始切换"
+            lock_to_frequency "$earfcn" "141"
+        else
+            log_message "DEBUG" "扫描结果中未发现PCI 141"
+        fi
+    else
+        log_message "WARN" "扫描失败，无法检查PCI 141"
+    fi
 }
 
 # 检查并清空日志文件的函数
@@ -560,11 +596,10 @@ perform_network_monitoring() {
     case $status_result in
         0)
             # CPE状态正常
-            # 检查是否在指定时间点
-            if check_specific_time; then
-                # 在指定时间点，检查是否需要切换到PCI 141
-                log_message "INFO" "到达指定时间点，检查PCI 141状态"
-                lock_cellular_141
+            # 检查是否需要进行扫描（网络空闲且间隔超过20分钟）
+            if should_scan_for_pci141; then
+                log_message "INFO" "网络空闲，开始扫描检查PCI 141"
+                scan_and_lock_pci141
             fi
 
             # 处理CPE状态恢复
@@ -700,10 +735,7 @@ case "$1" in
             echo "扫描失败"
         fi
         ;;
-    "-r")
-        echo "执行锁定到141 (lock_cellular_141)"
-        lock_cellular_141
-        ;;
+
     "-g")
         echo "获取CPE信号强度 (get_signal)"
         signal=$(get_signal)
@@ -724,31 +756,42 @@ case "$1" in
             2) echo "跳过检测 - 非up状态但有信号"; exit 2 ;;
         esac
         ;;
+    "-i")
+        echo "检查网络是否空闲 (is_network_idle)"
+        if is_network_idle; then
+            echo "网络空闲"
+            exit 0
+        else
+            echo "网络繁忙"
+            exit 1
+        fi
+        ;;
     "")
         echo "默认启动守护进程模式"
         start_daemon
         ;;
     *)
-        echo "用法: $0 [start|stop|restart|status|-c|-s|-r|-g|-n|-l]"
+        echo "用法: $0 [start|stop|restart|status|-c|-s|-g|-n|-i]"
         echo "  start:    启动守护进程（默认）"
         echo "  stop:     停止守护进程"
         echo "  restart:  重启守护进程"
         echo "  status:   查看守护进程状态"
         echo "  -c:       执行单次CPE状态检测"
         echo "  -s:       执行频点扫描测试"
-        echo "  -r:       执行锁定到PCI 141"
         echo "  -g:       获取CPE信号强度"
         echo "  -n:       执行CPE状态检测"
+        echo "  -i:       检查网络是否空闲"
         echo ""
         echo "测试命令:"
         echo "  -g:       显示当前CPE信号强度 (RSRP值)"
         echo "  -n:       测试CPE状态是否正常"
+        echo "  -i:       检查当前网络是否空闲"
         echo ""
         echo "守护进程功能:"
         echo "  - 每2秒检测CPE连接状态"
         echo "  - CPE状态异常立即按默认顺序切换频点"
         echo "  - 锁频超过30秒时按默认顺序依次切换频点"
-        echo "  - 在6:50,16:30,18:30,20:30检查PCI 141"
+        echo "  - 网络空闲时扫描频点，发现PCI 141时自动切换（间隔20分钟）"
         echo "  - CPE状态恢复时发送钉钉通知"
         echo ""
         exit 1
