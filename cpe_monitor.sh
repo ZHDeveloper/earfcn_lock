@@ -21,21 +21,6 @@ LAST_CHECK_TIME=""
 # 全局变量：上次指定时间点检查时间（防止重复执行lock_cellular_141）
 LAST_SPECIFIC_TIME_CHECK=""
 
-# 检查cpetools进程是否在运行
-check_cpetools_running() {
-    # 使用 pgrep 查找 cpetools 进程
-    if pgrep -f "cpetools" >/dev/null 2>&1; then
-        return 0
-    fi
-
-    # 备用方法：使用 ps + grep
-    if ps | grep -v grep | grep "cpetools" >/dev/null 2>&1; then
-        return 0
-    fi
-
-    return 1
-}
-
 # 获取文件大小
 get_file_size() {
     local file="$1"
@@ -154,14 +139,8 @@ get_cpe_status() {
             ;;
         *)
             # 状态未知或为空时，进一步检查
-            # 检查是否有cpetools进程在运行
-            if check_cpetools_running; then
-                log_message "DEBUG" "检测到cpetools进程正在运行，可能正在锁频操作"
-                return 2  # 跳过检测
-            else
-                log_message "DEBUG" "无法获取CPE状态或状态未知: '$wan_status'，跳过CPE状态检测"
-                return 2  # 跳过检测
-            fi
+            log_message "DEBUG" "无法获取CPE状态或状态未知: '$wan_status'，跳过CPE状态检测"
+            return 1  # CPE状态异常
             ;;
     esac
 }
@@ -379,45 +358,6 @@ handle_frequency_lock() {
         fi
     else
         log_message "ERROR" "频点扫描失败，无法进行智能锁频"
-    fi
-}
-
-# 获取限速信息（参考get_speedlimit_info）
-get_speedlimit_info() {
-    local support_status=$(uci -q get cloudd.limit.support)
-    local enabled_rules=""
-    local temp_file="/tmp/speedlimit_rules_$$"
-
-    # 检查是否支持限速
-    if [ "$support_status" != "1" ]; then
-        echo "support=0"
-        return 1
-    fi
-
-    # 使用临时文件收集启用的限速规则，避免子shell变量作用域问题
-    > "$temp_file"  # 清空临时文件
-
-    # 获取所有speedlimit规则并检查启用状态
-    uci -q foreach cloudd speedlimit "
-        local rule_name=\"\$1\"
-        local rule_enabled=\$(uci -q get cloudd.\$rule_name.enabled)
-        if [ \"\$rule_enabled\" = \"1\" ]; then
-            echo \"\$rule_name\" >> \"$temp_file\"
-        fi
-    "
-
-    # 读取临时文件中的启用规则
-    if [ -s "$temp_file" ]; then
-        # 文件不为空，说明有启用的规则
-        enabled_rules=$(cat "$temp_file" | tr '\n' ',' | sed 's/,$//')  # 用逗号连接并移除末尾逗号
-        rm -f "$temp_file"
-        echo "support=1,enabled_rules=$enabled_rules"
-        return 0
-    else
-        # 文件为空，说明没有启用的规则
-        rm -f "$temp_file"
-        echo "support=1,enabled_rules=none"
-        return 1
     fi
 }
 
@@ -749,25 +689,6 @@ case "$1" in
             2) echo "跳过检测 - CPE锁定或阻塞状态"; exit 2 ;;
         esac
         ;;
-
-    "-l")
-        echo "查看限速状态 (get_speedlimit_info)"
-        speedlimit_info=$(get_speedlimit_info)
-        support_status=$(echo "$speedlimit_info" | cut -d',' -f1 | cut -d'=' -f2)
-        enabled_rules=$(echo "$speedlimit_info" | cut -d',' -f2 | cut -d'=' -f2 2>/dev/null)
-
-        echo "限速支持状态: $support_status"
-        if [ "$support_status" = "1" ]; then
-            echo "启用的限速规则: $enabled_rules"
-            if [ "$enabled_rules" != "none" ] && [ -n "$enabled_rules" ]; then
-                echo "⚠️  警告: 检测到启用的限速规则，可能影响CPE连接速度"
-            else
-                echo "✅ 当前无启用的限速规则"
-            fi
-        else
-            echo "✅ 限速功能已被禁用"
-        fi
-        ;;
     "")
         echo "默认启动守护进程模式"
         start_daemon
@@ -783,12 +704,10 @@ case "$1" in
         echo "  -r:       执行锁定到PCI 141"
         echo "  -g:       获取CPE信号强度"
         echo "  -n:       执行CPE状态检测"
-        echo "  -l:       查看限速状态"
         echo ""
         echo "测试命令:"
         echo "  -g:       显示当前CPE信号强度 (RSRP值)"
         echo "  -n:       测试CPE状态是否正常"
-        echo "  -l:       查看当前限速状态和规则"
         echo ""
         echo "守护进程功能:"
         echo "  - 每2秒检测CPE连接状态"
