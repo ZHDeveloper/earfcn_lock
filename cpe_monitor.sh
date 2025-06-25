@@ -564,6 +564,8 @@ should_scan_for_pci141() {
             return 1  # 同一天的6:50已执行过，跳过
         fi
         # 6:50时间点，强制扫描
+        # 记录扫描时间
+        LAST_SCAN_TIME=$(date '+%s')    
         return 0
     fi
 
@@ -582,13 +584,14 @@ should_scan_for_pci141() {
         fi
     fi
 
+    # 记录扫描时间
+    LAST_SCAN_TIME=$(date '+%s')
+
     return 0  # 可以扫描
 }
 
 # 扫描并检查PCI 141，如果发现则锁频
 scan_and_lock_pci141() {
-    # 记录扫描时间
-    LAST_SCAN_TIME=$(date '+%s')
 
     # 执行扫描
     local scan_result=$(scan_frequencies)
@@ -676,7 +679,7 @@ perform_network_monitoring() {
     case $status_result in
         0)
             # CPE状态正常
-            # 检查是否需要进行扫描（网络空闲且间隔超过20分钟）
+            # 检查是否需要进行扫描（网络空闲且间隔超过1小时）
             if should_scan_for_pci141; then
                 log_message "INFO" "网络空闲，开始扫描检查PCI 141"
                 scan_and_lock_pci141
@@ -871,7 +874,7 @@ case "$1" in
         echo "  - 每2秒检测CPE连接状态"
         echo "  - CPE状态异常立即按默认顺序切换频点"
         echo "  - 锁频超过30秒时按默认顺序依次切换频点"
-        echo "  - 网络空闲时扫描频点，发现PCI 141时自动切换（间隔20分钟）"
+        echo "  - 网络空闲时扫描频点，发现PCI 141时自动切换（间隔1小时）"
         echo "  - 每天6:50强制扫描频点，发现PCI 141时自动切换"
         echo "  - CPE状态恢复时发送钉钉通知"
         echo ""
