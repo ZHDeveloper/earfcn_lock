@@ -170,28 +170,20 @@ is_cpe_up() {
 # 扫描附近频点
 scan_frequencies() {
     local cache_file="/var/cpescan_cache_last_cpe"
+
+    # 执行扫描（30秒超时）
+    log_message "INFO" "开始扫描频点（30秒超时）"
+
+    # 使用timeout命令执行扫描，30秒超时
+    timeout 30 cpetools.sh -i cpe -c scan > "$cache_file"
+
+    # 检查扫描结果：文件修改时间在1分钟内且内容不为空
     local current_time=$(date '+%s')
-    local cache_valid_duration=1200  # 20分钟 = 1200秒
+    local file_time=$(stat -c %Y "$cache_file" 2>/dev/null || echo "0")
+    local time_diff=$((current_time - file_time))
 
-    # 检查缓存文件是否存在且有内容
-    if [ -s "$cache_file" ]; then
-        # 获取缓存文件的修改时间（针对OpenWrt优化）
-        local cache_time=$(stat -c %Y "$cache_file" 2>/dev/null || echo "0")
-        if [ "$cache_time" != "0" ]; then
-            local time_diff=$((current_time - cache_time))
-
-            # 如果缓存文件在10分钟内，直接返回缓存内容
-            if [ $time_diff -lt $cache_valid_duration ]; then
-                local scan_result=$(cat "$cache_file")
-                echo "$scan_result"
-                return 0
-            fi
-        fi
-    fi
-
-    # 执行新的扫描
-    cpetools.sh -i cpe -c scan > "$cache_file"
-    if [ $? -eq 0 ] && [ -s "$cache_file" ]; then
+    if [ $time_diff -le 60 ] && [ -s "$cache_file" ]; then
+        log_message "INFO" "频点扫描完成"
         local scan_result=$(cat "$cache_file")
         echo "$scan_result"
         return 0
