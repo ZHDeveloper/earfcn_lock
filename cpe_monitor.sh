@@ -388,33 +388,91 @@ try_default_frequencies() {
     log_message "INFO" "开始尝试默认频点配置策略"
 
     # 默认频点配置列表（按优先级排序）
-    local default_frequencies="627264|296 633984|189 633984|93 633984|141"
+    local default_frequencies="627264|296 633984|189 633984|141"
 
     # 获取当前配置
     local current_pci5=$(uci -q get cpecfg.cpesim1.pci5)
     local current_earfcn5=$(uci -q get cpecfg.cpesim1.earfcn5)
     local current_combination="${current_earfcn5}|${current_pci5}"
 
-    # 遍历默认频点配置
+    log_message "INFO" "当前配置: EARFCN=$current_earfcn5, PCI=$current_pci5"
+
+    # 根据当前PCI值确定下一个要尝试的频点
+    local next_freq=""
+    local found_current=false
+
+    # 遍历默认频点配置，找到当前PCI后的下一个频点
     for freq_combination in $default_frequencies; do
         local earfcn=$(echo "$freq_combination" | cut -d'|' -f1)
         local pci=$(echo "$freq_combination" | cut -d'|' -f2)
 
-        # 跳过当前已经配置的组合
-        if [ "$freq_combination" = "$current_combination" ]; then
-            continue
+        # 如果已经找到当前PCI，则选择这个作为下一个频点
+        if [ "$found_current" = true ]; then
+            next_freq="$freq_combination"
+            break
         fi
 
-        log_message "INFO" "尝试默认频点配置: EARFCN=$earfcn, PCI=$pci"
-        if lock_to_frequency "$earfcn" "$pci"; then
-            log_message "INFO" "成功切换到默认频点配置: EARFCN=$earfcn, PCI=$pci"
-            return 0
-        else
-            log_message "WARN" "默认频点配置切换失败: EARFCN=$earfcn, PCI=$pci，尝试下一个"
+        # 如果找到当前PCI，标记为已找到
+        if [ "$pci" = "$current_pci5" ]; then
+            found_current=true
         fi
     done
 
-    log_message "ERROR" "所有默认频点配置尝试失败"
+    # 如果没有找到下一个频点（当前PCI是最后一个或不在列表中），则从第一个开始
+    if [ -z "$next_freq" ]; then
+        next_freq=$(echo "$default_frequencies" | cut -d' ' -f1)
+        log_message "INFO" "当前PCI不在列表中或已是最后一个，从第一个频点开始尝试"
+    fi
+
+    # 尝试所有频点，从计算出的下一个频点开始
+    local attempts=0
+    local max_attempts=4  # 总共4个频点
+    local current_try="$next_freq"
+
+    while [ $attempts -lt $max_attempts ]; do
+        local earfcn=$(echo "$current_try" | cut -d'|' -f1)
+        local pci=$(echo "$current_try" | cut -d'|' -f2)
+
+        log_message "INFO" "尝试频点配置 [第$((attempts + 1))次]: EARFCN=$earfcn, PCI=$pci"
+
+        # 跳过当前已经配置的组合
+        if [ "$current_try" = "$current_combination" ]; then
+            log_message "INFO" "跳过当前已配置的频点组合: EARFCN=$earfcn, PCI=$pci"
+        else
+            # 尝试切换到目标频点
+            if lock_to_frequency "$earfcn" "$pci"; then
+                log_message "INFO" "成功切换到频点配置: EARFCN=$earfcn, PCI=$pci"
+                return 0
+            else
+                log_message "WARN" "频点配置切换失败: EARFCN=$earfcn, PCI=$pci，尝试下一个"
+            fi
+        fi
+
+        # 移动到下一个频点
+        attempts=$((attempts + 1))
+
+        # 找到当前频点在列表中的下一个频点
+        local found_current_try=false
+        local next_try=""
+        for freq_combination in $default_frequencies; do
+            if [ "$found_current_try" = true ]; then
+                next_try="$freq_combination"
+                break
+            fi
+            if [ "$freq_combination" = "$current_try" ]; then
+                found_current_try=true
+            fi
+        done
+
+        # 如果没有找到下一个，回到第一个
+        if [ -z "$next_try" ]; then
+            next_try=$(echo "$default_frequencies" | cut -d' ' -f1)
+        fi
+
+        current_try="$next_try"
+    done
+
+    log_message "ERROR" "所有默认频点配置尝试失败，已尝试 $attempts 个频点"
     return 1
 }
 
