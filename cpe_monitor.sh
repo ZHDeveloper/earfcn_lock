@@ -118,6 +118,8 @@ get_cpe_status() {
     # 根据状态判断处理方式
     case "$wan_status" in
         "up")
+            # CPE状态正常，清空锁频时间记录
+            FREQUENCY_LOCK_TIME=""
             return 0  # CPE状态正常
             ;;
         "down"|"block"|*)
@@ -375,10 +377,7 @@ handle_frequency_lock() {
     # 如果锁频超过30秒，开始按默认顺序切换频点
     if [ $lock_duration -gt 30 ]; then
         log_message "INFO" "锁频超过30秒，开始按默认顺序切换频点"
-
-        # 清空锁频时间记录，避免重复触发
-        FREQUENCY_LOCK_TIME=""
-
+        
         # 按默认顺序依次切换频点
         try_default_frequencies
     fi
@@ -423,10 +422,6 @@ try_default_frequencies() {
 
 # 处理CPE状态恢复的函数
 handle_status_recovery() {
-    # 清空锁频时间记录（CPE状态恢复时）
-    if [ -n "$FREQUENCY_LOCK_TIME" ]; then
-        FREQUENCY_LOCK_TIME=""
-    fi
 
     # 如果存在CPE状态异常记录则发送钉钉消息并清空记录变量
     if [ -n "$DISCONNECT_TIME" ]; then
