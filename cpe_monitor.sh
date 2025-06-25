@@ -162,7 +162,7 @@ is_network_idle() {
     [ $bytes_per_sec -lt $threshold ]
 }
 
-# 扫描附近频点 - 简化版本
+# 扫描附近频点
 # 后台启动扫描，30秒内监听结果文件
 scan_frequencies() {
     local cpescan_last_cache="/tmp/cpescan_cache_last_cpe"
@@ -269,8 +269,18 @@ select_best_frequency() {
     local scan_data="$1"
     local available_combinations=$(parse_scan_result "$scan_data")
 
-    # PCI优先级列表
-    local priority_pcis="141 189 296 93"
+    # 获取当前PCI配置
+    local current_pci=$(uci -q get cpecfg.cpesim1.pci5)
+
+    # PCI优先级列表，移除当前PCI
+    local all_priority_pcis="141 296 189 93"
+    local priority_pcis=""
+    for pci in $all_priority_pcis; do
+        if [ "$pci" != "$current_pci" ]; then
+            priority_pcis="$priority_pcis $pci"
+        fi
+    done
+    priority_pcis=$(echo "$priority_pcis" | sed 's/^ *//')
 
     # 按优先级查找可用的PCI
     for priority_pci in $priority_pcis; do
@@ -304,12 +314,9 @@ select_best_frequency() {
         if (earfcn != "" && pci != "" && rsrp != "") {
             combination_count++
 
-            # 验证RSRP是否为有效整数
-            if (rsrp ~ /^-?[0-9]+$/) {
-                if (best_rsrp == "" || rsrp > best_rsrp) {
-                    best_rsrp = rsrp
-                    best_line = $0
-                }
+            if (best_rsrp == "" || rsrp > best_rsrp) {
+                best_rsrp = rsrp
+                best_line = $0
             }
         }
     }
