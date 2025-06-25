@@ -140,7 +140,7 @@ get_cpe_status() {
 
 # 检查网络是否空闲
 is_network_idle() {
-    local interface="cpe"
+    local interface="eth0"
     local threshold=10240  # 10KB/s
 
     # 检查接口是否存在
@@ -162,37 +162,61 @@ is_network_idle() {
     [ $bytes_per_sec -lt $threshold ]
 }
 
-# 检查CPE是否为up状态
-is_cpe_up() {
-    local _iface="cpe"
-    local wan_status=$(cat "/var/run/wanchk/iface_state/$_iface" 2>/dev/null)
-    [ "$wan_status" = "up" ]
-}
-
-# 扫描附近频点
+# 扫描附近频点 - 简化版本
+# 后台启动扫描，30秒内监听结果文件
 scan_frequencies() {
-    local cache_file="/var/cpescan_cache_last_cpe"
+    local cpescan_last_cache="/tmp/cpescan_cache_last_cpe"
+    local max_wait=30
+    local wait_time=0
 
-    # 执行扫描（30秒超时）
-    log_message "INFO" "开始扫描频点（30秒超时）"
-
-    # 使用timeout命令执行扫描，30秒超时
-    timeout 30 cpetools.sh -i cpe -c scan > "$cache_file"
-
-    # 检查扫描结果：文件修改时间在1分钟内且内容不为空
-    local current_time=$(date '+%s')
-    local file_time=$(stat -c %Y "$cache_file" 2>/dev/null || echo "0")
-    local time_diff=$((current_time - file_time))
-
-    if [ $time_diff -le 60 ] && [ -s "$cache_file" ]; then
-        log_message "INFO" "频点扫描完成"
-        local scan_result=$(cat "$cache_file")
-        echo "$scan_result"
-        return 0
-    else
-        log_message "ERROR" "频点扫描失败或结果为空"
-        return 1
+    # 记录扫描前文件的修改时间
+    local file_mtime_before=0
+    if [ -f "$cpescan_last_cache" ]; then
+        file_mtime_before=$(stat -c %Y "$cpescan_last_cache" 2>/dev/null || echo 0)
     fi
+
+    log_message "INFO" "启动后台频点扫描"
+
+    # 后台启动扫描
+    (cpetools.sh -i cpe -c scan > "$cpescan_last_cache" 2>/dev/null) &
+    local scan_pid=$!
+
+    # 30秒内监听扫描结果文件
+    while [ $wait_time -lt $max_wait ]; do
+        sleep 1
+        wait_time=$((wait_time + 1))
+
+        # 检查扫描结果文件是否生成且有效
+        if [ -f "$cpescan_last_cache" ]; then
+            # 检查文件修改时间是否比扫描前更新
+            local file_mtime_after=$(stat -c %Y "$cpescan_last_cache" 2>/dev/null || echo 0)
+            if [ $file_mtime_after -gt $file_mtime_before ]; then
+                local scan_result=$(cat "$cpescan_last_cache" 2>/dev/null)
+                if [ -n "$scan_result" ]; then
+                    log_message "INFO" "频点扫描完成 (用时 ${wait_time}秒)"
+                    # 终止扫描进程（如果还在运行）
+                    kill "$scan_pid" 2>/dev/null
+                    echo "$scan_result"
+                    return 0
+                else
+                    log_message "WARN" "扫描文件已更新但内容为空，结束监听"
+                    break
+                fi
+            fi
+        fi
+
+        # 检查扫描进程是否还在运行
+        if ! kill -0 "$scan_pid" 2>/dev/null; then
+            log_message "DEBUG" "扫描进程已结束，退出监听循环"
+            break
+        fi
+    done
+
+    # 超时处理
+    kill -9 "$scan_pid" 2>/dev/null
+
+    log_message "ERROR" "频点扫描失败，无有效结果"
+    return 1
 }
 
 # 从扫描结果中提取可用的PCI、EARFCN和RSRP组合
