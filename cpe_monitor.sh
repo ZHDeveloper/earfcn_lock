@@ -576,9 +576,9 @@ should_scan_for_pci141() {
     local current_time=$(date '+%s')
     if [ -n "$LAST_SCAN_TIME" ]; then
         local time_diff=$((current_time - LAST_SCAN_TIME))
-        # 20分钟 = 1200秒
-        if [ $time_diff -lt 1200 ]; then
-            return 1  # 间隔不足20分钟，不扫描
+        # 1小时 = 3600秒
+        if [ $time_diff -lt 3600 ]; then
+            return 1  # 间隔不足1小时，不扫描
         fi
     fi
 
@@ -589,13 +589,6 @@ should_scan_for_pci141() {
 scan_and_lock_pci141() {
     # 记录扫描时间
     LAST_SCAN_TIME=$(date '+%s')
-
-    # 如果是6:50时间点，记录6:50扫描时间
-    local current_hour=$(date '+%H')
-    local current_minute=$(date '+%M')
-    if [ "$current_hour" = "06" ] && [ "$current_minute" = "50" ]; then
-        LAST_650_SCAN="$(date '+%Y-%m-%d-06-50')"
-    fi
 
     # 执行扫描
     local scan_result=$(scan_frequencies)
