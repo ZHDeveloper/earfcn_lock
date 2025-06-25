@@ -165,57 +165,77 @@ is_network_idle() {
 # 扫描附近频点
 # 后台启动扫描，30秒内监听结果文件
 scan_frequencies() {
-    local cpescan_last_cache="/tmp/cpescan_cache_last_cpe"
-    local max_wait=30
-    local wait_time=0
+    local iface="cpe"
+    local cpescan_time="/tmp/cpescan_time_point"
+    local cpescan_cache="/tmp/cpescan_cache"
+    local cpescan_last_cache="/tmp/cpescan_cache_last_${iface}"
+    local scan_interval=60
+    local max_try=30
+    local try_time=1
+    local upt=0
+    local last_scan_point=0
+    local sys_uptime_file="/proc/uptime"
+    local scan_result=""
 
-    # 记录扫描前文件的修改时间
-    local file_mtime_before=0
-    if [ -f "$cpescan_last_cache" ]; then
-        file_mtime_before=$(stat -c %Y "$cpescan_last_cache" 2>/dev/null || echo 0)
+    # 获取系统uptime（秒）
+    if [ -f "$sys_uptime_file" ]; then
+        upt=$(awk '{print int($1)}' "$sys_uptime_file")
+    else
+        upt=$(date +%s)
     fi
 
-    log_message "INFO" "启动后台频点扫描"
+    # 获取上次扫描时间
+    if [ -f "$cpescan_time" ]; then
+        last_scan_point=$(cat "$cpescan_time" 2>/dev/null | head -n1)
+        last_scan_point=${last_scan_point:-0}
+    fi
 
-    # 后台启动扫描
-    (cpetools.sh -i cpe -c scan > "$cpescan_last_cache" 2>/dev/null) &
-    local scan_pid=$!
+    local diff_time=$((upt - last_scan_point))
+    local exsit=0
 
-    # 30秒内监听扫描结果文件
-    while [ $wait_time -lt $max_wait ]; do
-        sleep 1
-        wait_time=$((wait_time + 1))
-
-        # 检查扫描结果文件是否生成且有效
-        if [ -f "$cpescan_last_cache" ]; then
-            # 检查文件修改时间是否比扫描前更新
-            local file_mtime_after=$(stat -c %Y "$cpescan_last_cache" 2>/dev/null || echo 0)
-            if [ $file_mtime_after -gt $file_mtime_before ]; then
-                local scan_result=$(cat "$cpescan_last_cache" 2>/dev/null)
+    if [ "$diff_time" -ge "$scan_interval" ]; then
+        log_message "INFO" "距离上次扫描已超过${scan_interval}秒，开始新扫描"
+        # 发起新扫描
+        (cpetools.sh -i "$iface" -c scan > "$cpescan_last_cache" 2>/dev/null) &
+        local scan_pid=$!
+        while [ $try_time -le $max_try ]; do
+            sleep 2
+            if [ -f "$cpescan_last_cache" ]; then
+                scan_result=$(cat "$cpescan_last_cache" 2>/dev/null)
                 if [ -n "$scan_result" ]; then
-                    log_message "INFO" "频点扫描完成 (用时 ${wait_time}秒)"
-                    # 终止扫描进程（如果还在运行）
-                    kill "$scan_pid" 2>/dev/null
-                    echo "$scan_result"
-                    return 0
-                else
-                    log_message "WARN" "扫描文件已更新但内容为空，结束监听"
+                    exsit=1
                     break
                 fi
             fi
+            if ! kill -0 "$scan_pid" 2>/dev/null; then
+                break
+            fi
+            try_time=$((try_time+1))
+        done
+        kill -9 "$scan_pid" 2>/dev/null
+        echo "$upt" > "$cpescan_time"
+        if [ $exsit -eq 1 ]; then
+            echo "$scan_result" > "$cpescan_cache"
         fi
+    fi
 
-        # 检查扫描进程是否还在运行
-        if ! kill -0 "$scan_pid" 2>/dev/null; then
-            log_message "DEBUG" "扫描进程已结束，退出监听循环"
-            break
+    # 优先读取最新扫描结果
+    if [ -f "$cpescan_last_cache" ]; then
+        scan_result=$(cat "$cpescan_last_cache" 2>/dev/null)
+        if [ -n "$scan_result" ]; then
+            echo "$scan_result"
+            return 0
         fi
-    done
-
-    # 超时处理
-    kill -9 "$scan_pid" 2>/dev/null
-
-    log_message "ERROR" "频点扫描失败，无有效结果"
+    fi
+    # 兜底读取缓存
+    if [ -f "$cpescan_cache" ]; then
+        scan_result=$(cat "$cpescan_cache" 2>/dev/null)
+        if [ -n "$scan_result" ]; then
+            echo "$scan_result"
+            return 0
+        fi
+    fi
+    log_message "ERROR" "未找到有效的频点扫描结果"
     return 1
 }
 
@@ -227,35 +247,21 @@ parse_scan_result() {
     # 将扫描数据写入临时文件，避免管道子shell问题
     echo "$scan_data" > "$temp_file"
 
-    # 使用jsonfilter解析JSON数据，提取NR模式的cell信息
-    # 获取scanlist数组的长度
-    local array_length=$(jsonfilter -i "$temp_file" -e '@.scanlist[#]' 2>/dev/null)
-
-    if [ -z "$array_length" ] || [ "$array_length" = "0" ]; then
-        log_message "WARN" "扫描结果为空或格式错误"
-        rm -f "$temp_file"
-        return 1
-    fi
-
-    # 遍历scanlist数组中的每个元素
+    # 兼容所有 jsonfilter 版本的遍历方式
     local i=0
-    while [ $i -lt "$array_length" ]; do
-        # 提取当前索引的cell信息
+    while :; do
         local mode=$(jsonfilter -i "$temp_file" -e "@.scanlist[$i].MODE" 2>/dev/null)
+        [ -z "$mode" ] && break
 
-        # 只处理NR模式的cell
         if [ "$mode" = "NR" ]; then
             local earfcn=$(jsonfilter -i "$temp_file" -e "@.scanlist[$i].EARFCN" 2>/dev/null)
             local pci=$(jsonfilter -i "$temp_file" -e "@.scanlist[$i].PCI" 2>/dev/null)
             local rsrp=$(jsonfilter -i "$temp_file" -e "@.scanlist[$i].RSRP" 2>/dev/null)
-
-            # 验证提取的值是否有效
             if [ -n "$earfcn" ] && [ -n "$pci" ] && [ -n "$rsrp" ] && \
                [ "$earfcn" != "null" ] && [ "$pci" != "null" ] && [ "$rsrp" != "null" ]; then
                 echo "$earfcn|$pci|$rsrp"
             fi
         fi
-
         i=$((i + 1))
     done
 
