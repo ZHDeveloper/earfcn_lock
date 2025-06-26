@@ -560,6 +560,12 @@ handle_status_recovery() {
 
 # 检查是否应该进行PCI 141扫描
 should_scan_for_pci141() {
+    # 检查当前PCI是否为141，如果是则不需要扫描
+    local current_pci=$(uci -q get cpecfg.cpesim1.pci5)
+    if [ "$current_pci" = "141" ]; then
+        return 1  # 当前已是PCI 141，不需要扫描
+    fi
+
     # 检查是否为6:50时间点
     local current_hour=$(date '+%H')
     local current_minute=$(date '+%M')
@@ -687,7 +693,6 @@ perform_network_monitoring() {
             # CPE状态正常
             # 检查是否需要进行扫描（网络空闲且间隔超过1小时）
             if should_scan_for_pci141; then
-                log_message "INFO" "网络空闲，开始扫描检查PCI 141"
                 scan_and_lock_pci141
             fi
 
