@@ -194,7 +194,7 @@ scan_frequencies() {
     local exsit=0
 
     if [ "$diff_time" -ge "$scan_interval" ]; then
-        log_message "INFO" "距离上次扫描已超过${scan_interval}秒，开始新扫描"
+        log_message "INFO" "开始新扫描附近频点"
         # 发起新扫描
         (cpetools.sh -i "$iface" -c scan > "$cpescan_last_cache" 2>/dev/null) &
         local scan_pid=$!
