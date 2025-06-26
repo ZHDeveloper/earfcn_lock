@@ -398,7 +398,7 @@ handle_frequency_lock() {
     if [ -z "$FREQUENCY_LOCK_TIME" ]; then
         log_message "INFO" "无锁频时间记录，立即尝试锁频"
         # 按默认顺序依次切换频点
-        try_default_frequencies
+        try_default_frequencies true
         return 0
     fi
 
@@ -416,13 +416,15 @@ handle_frequency_lock() {
         log_message "INFO" "锁频超过30秒，开始按默认顺序切换频点"
         
         # 按默认顺序依次切换频点
-        try_default_frequencies
+        try_default_frequencies false
     fi
 }
 
 # 尝试默认频点配置
 try_default_frequencies() {
-    log_message "INFO" "开始尝试默认频点配置策略"
+    local is_first_time="$1"  # 新增参数：是否是第一次锁频
+    
+    log_message "INFO" "开始尝试默认频点配置策略 (首次锁频: ${is_first_time:-false})"
 
     # 默认频点配置列表（按优先级排序）
     local default_frequencies="627264|296 633984|189 633984|141"
@@ -434,6 +436,39 @@ try_default_frequencies() {
 
     log_message "INFO" "当前配置: EARFCN=$current_earfcn5, PCI=$current_pci5"
 
+    # 如果是第一次锁频，从优先级最高的频点开始尝试
+    if [ "$is_first_time" = "true" ]; then
+        log_message "INFO" "首次锁频，按优先级顺序从第一个频点开始尝试"
+        local attempts=0
+        local max_attempts=3  # 总共3个频点配置
+        
+        for freq_combination in $default_frequencies; do
+            local earfcn=$(echo "$freq_combination" | cut -d'|' -f1)
+            local pci=$(echo "$freq_combination" | cut -d'|' -f2)
+            
+            attempts=$((attempts + 1))
+            log_message "INFO" "尝试频点配置 [第${attempts}次]: EARFCN=$earfcn, PCI=$pci (优先级顺序)"
+            
+            # 跳过当前已经配置的组合
+            if [ "$freq_combination" = "$current_combination" ]; then
+                log_message "INFO" "跳过当前已配置的频点组合: EARFCN=$earfcn, PCI=$pci"
+                continue
+            fi
+            
+            # 尝试切换到目标频点
+            if lock_to_frequency "$earfcn" "$pci"; then
+                log_message "INFO" "成功切换到频点配置: EARFCN=$earfcn, PCI=$pci"
+                return 0
+            else
+                log_message "WARN" "频点配置切换失败: EARFCN=$earfcn, PCI=$pci，尝试下一个"
+            fi
+        done
+        
+        log_message "ERROR" "所有默认频点配置尝试失败，已尝试 $attempts 个频点"
+        return 1
+    fi
+
+    # 非首次锁频，按原有逻辑从当前PCI后的下一个频点开始
     # 根据当前PCI值确定下一个要尝试的频点
     local next_freq=""
     local found_current=false
@@ -564,6 +599,26 @@ should_scan_for_pci141() {
     local current_pci=$(uci -q get cpecfg.cpesim1.pci5)
     if [ "$current_pci" = "141" ]; then
         return 1  # 当前已是PCI 141，不需要扫描
+    fi
+
+    # 检查uptime是否小于1小时
+    local _iface="cpe"
+    local uptime=0
+    
+    # 使用ubus获取CPE状态信息
+    local cpe_status=$(ubus call infocd cpestatus 2>/dev/null)
+    if [ $? -eq 0 ] && [ -n "$cpe_status" ]; then
+        # 提取指定接口的状态信息
+        local iface_info=$(echo "$cpe_status" | jsonfilter -e '@.*[@.status.name="'${_iface}'"]' 2>/dev/null)
+        if [ -n "$iface_info" ]; then
+            uptime=$(echo "$iface_info" | jsonfilter -e '@.uptime' 2>/dev/null)
+            uptime=${uptime:-0}
+            
+            # 如果uptime小于1小时（3600秒），则不需要扫描
+            if [ "$uptime" -lt 3600 ]; then
+                return 1  # uptime小于1小时，不需要扫描
+            fi
+        fi
     fi
 
     # 检查是否为6:50时间点
