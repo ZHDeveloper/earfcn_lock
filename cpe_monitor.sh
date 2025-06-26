@@ -632,7 +632,8 @@ should_scan_for_pci141() {
         fi
         # 6:50时间点，强制扫描
         # 记录扫描时间
-        LAST_SCAN_TIME=$(date '+%s')    
+        LAST_SCAN_TIME=$(date '+%s')
+        LAST_650_SCAN="$current_time_key"
         return 0
     fi
 
@@ -768,6 +769,14 @@ perform_network_monitoring() {
             handle_frequency_lock
             ;;
         2)
+            # CPE状态异常
+            if [ -z "$DISCONNECT_TIME" ]; then
+                # 记录CPE状态异常时间（Unix时间戳和可读格式，用|分隔）
+                local timestamp=$(date '+%s')
+                local readable_time=$(date '+%Y-%m-%d %H:%M:%S')
+                DISCONNECT_TIME="${timestamp}|${readable_time}"
+                log_message "INFO" "CPE状态异常，开始记录异常时间: $readable_time"
+            fi
             # 跳过检测（非up状态但有信号）
             return 1  # 返回1表示跳过检测
             ;;
